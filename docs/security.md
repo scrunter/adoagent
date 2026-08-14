@@ -14,18 +14,19 @@
 
 The helper captures and reapplies owner, group, and DACL SDDL. SACL collection is omitted because reading it requires `SeSecurityPrivilege` and audit policy is managed independently. Apply required SACLs at the parent by policy and verify them separately.
 
-## Signing policy
+## Artifact integrity policy
 
-- Production config sets `allowUnsigned: false` and a normalized signer thumbprint.
-- Runtime uses Windows trust policy (`WinVerifyTrust`) and then pins the signer certificate thumbprint.
-- Setup validates each executable, DLL, PowerShell script/module/manifest, and VBS in the package before use and on each node.
-- Release file hashes are in `RELEASE-MANIFEST.json`; its detached CMS signature is `RELEASE-MANIFEST.json.p7s`.
-- Treat timestamp and revocation failures according to enterprise signing policy; do not paper over them with lab bypass.
-- Rotate config and package together when the certificate changes.
+The toolkit does not require or validate Authenticode signatures. There is one package type and no signer thumbprint, certificate rotation, detached CMS signature, or unsigned-lab bypass.
 
-The 15-second runtime probe does not force online revocation retrieval; doing so could turn CA/CRL network loss into cluster churn. Enforce certificate revocation with release verification and enterprise WDAC/AppLocker/code-integrity policy, and rotate the pinned release immediately on revocation.
+- The build writes `RELEASE-MANIFEST.json` with a SHA-256 and length for every packaged file.
+- The build writes a companion `<release>.zip.sha256` file and reports the ZIP hash.
+- Record the expected ZIP hash in an approved deployment/change record or trusted artifact system separate from the downloaded ZIP.
+- Compare the downloaded ZIP with that independently obtained value before extraction.
+- Run `Test-Release.ps1` after extraction to detect missing, altered, duplicated, escaping, or unlisted package files.
+- Node installation calculates hashes for the runtime files before transfer, verifies the installed bytes on each node, and then locks `C:\Program Files\AdoAgentClusterKey` to SYSTEM and built-in Administrators.
+- Protect the build pipeline, artifact repository, deployment identity, hash record, and node-administrator boundary. A hash stored beside an artifact does not authenticate its publisher.
 
-`-LabAllowUnsigned` is an explicit testing escape hatch. It sets `allowUnsigned`, emits a warning, and writes `UNSIGNED-LAB-ONLY.txt` under Program Files and ProgramData. Any production discovery of these markers is a security incident/configuration failure.
+Organizations may independently sign the files or enforce WDAC/AppLocker path/hash policies, but those controls are external to the toolkit and are not configuration prerequisites. When using hash allow-listing, update policy as part of each toolkit upgrade.
 
 ## DPAPI-NG governance
 
@@ -39,7 +40,7 @@ The protector SID is a recovery authorization boundary.
 - Require privileged access workstations/JIT membership for envelope operations.
 - Ensure the ADO service and pipeline principals are not members.
 
-The manifest records the SID and envelope SHA-256 but is not secret. Both envelope and manifest must still be protected from deletion/substitution and retained with the signed release.
+The manifest records the SID and envelope SHA-256 but is not secret. Both envelope and manifest must still be protected from deletion/substitution and retained with the approved release/hash record.
 
 ## Plaintext handling
 
@@ -49,7 +50,7 @@ The C# helper keeps plaintext only in process memory, zeros managed buffers with
 - disabling unapproved process dumps/debuggers on nodes;
 - excluding the helper from verbose command transcription that captures environment/context beyond sanitized output;
 - keeping swap/crash dumps encrypted and access-controlled;
-- using credential guard/EDR policies compatible with the signed binary.
+- using credential guard/EDR policies compatible with the helper binary.
 
 No PAT, password, certificate password, envelope bytes, DPAPI blob, or RSA JSON is accepted as a command-line option.
 
@@ -80,7 +81,7 @@ After registration, the deployment credential is no longer used. The agent's `.c
 Collect:
 
 - Security events for protector-group membership and privileged logon;
-- code-integrity/AppLocker/WDAC signature decisions;
+- artifact hash, WDAC/AppLocker, and code-integrity decisions where those optional enterprise controls are used;
 - Service Control Manager create/change/start/stop/failure events;
 - FailoverClustering resource state, dependency, ownership, and Resource Monitor events;
 - Application events/WSFC `Resource.LogInformation` lines containing helper command and exit code;

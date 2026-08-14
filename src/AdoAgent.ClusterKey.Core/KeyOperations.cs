@@ -188,7 +188,6 @@ public sealed class KeyOperations(IDataProtector protector, bool enforceSealedKe
     {
         RuntimeConfiguration configuration = JsonContracts.ReadRuntimeConfiguration(configId, configRoot);
         ValidateRuntimeConfiguration(configuration, configRoot);
-        VerifyRuntimeSignatures(configuration);
 
         AgentMetadata agent = JsonContracts.ReadAgentMetadata(configuration.AgentRoot);
         EnsureAgentId(configuration.ExpectedAgentId, agent.AgentId);
@@ -298,10 +297,6 @@ public sealed class KeyOperations(IDataProtector protector, bool enforceSealedKe
     {
         RuntimeConfiguration configuration = JsonContracts.ReadRuntimeConfiguration(configId, configRoot);
         ValidateRuntimeConfiguration(configuration, configRoot);
-        if (full)
-        {
-            VerifyRuntimeSignatures(configuration);
-        }
 
         AgentMetadata agent = JsonContracts.ReadAgentMetadata(configuration.AgentRoot);
         EnsureAgentId(configuration.ExpectedAgentId, agent.AgentId);
@@ -443,25 +438,6 @@ public sealed class KeyOperations(IDataProtector protector, bool enforceSealedKe
                 ExitCode.AdditionalCredentialStore,
                 $"Unsupported machine-bound credentials were detected: {string.Join(", ", stores)}.");
         }
-    }
-
-    private static void VerifyRuntimeSignatures(RuntimeConfiguration configuration)
-    {
-        AuthenticodeVerifier.VerifyCurrentExecutable(configuration.PublisherThumbprint, configuration.AllowUnsigned);
-        string executable = Environment.ProcessPath
-            ?? throw new ToolException(ExitCode.SignatureFailure, "Unable to resolve the helper installation directory.");
-        string scriptPath = Path.Combine(Path.GetDirectoryName(executable)!, "AdoAgentClusterKey.vbs");
-        if (!File.Exists(scriptPath))
-        {
-            if (configuration.AllowUnsigned)
-            {
-                return;
-            }
-
-            throw new ToolException(ExitCode.SignatureFailure, "The signed Generic Script file is missing from the helper directory.");
-        }
-
-        AuthenticodeVerifier.VerifyFile(scriptPath, configuration.PublisherThumbprint, configuration.AllowUnsigned);
     }
 
     private static IReadOnlyDictionary<string, object?> RuntimeData(RuntimeConfiguration configuration, AgentMetadata agent, bool changed) =>

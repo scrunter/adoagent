@@ -122,9 +122,7 @@ public static class JsonContracts
                 GetRequiredString(root, "sealedKeyPath"),
                 GetRequiredString(root, "expectedAgentId"),
                 GetRequiredString(root, "expectedPublicKeySha256"),
-                GetRequiredString(root, "targetFileSddl"),
-                GetOptionalString(root, "publisherThumbprint") ?? string.Empty,
-                GetOptionalBoolean(root, "allowUnsigned"));
+                GetRequiredString(root, "targetFileSddl"));
         }
         catch (JsonException exception)
         {
@@ -151,8 +149,6 @@ public static class JsonContracts
             writer.WriteString("expectedAgentId", configuration.ExpectedAgentId);
             writer.WriteString("expectedPublicKeySha256", configuration.ExpectedPublicKeySha256);
             writer.WriteString("targetFileSddl", configuration.TargetFileSddl);
-            writer.WriteString("publisherThumbprint", configuration.PublisherThumbprint);
-            writer.WriteBoolean("allowUnsigned", configuration.AllowUnsigned);
             writer.WriteEndObject();
         }, overwrite);
     }
@@ -218,12 +214,6 @@ public static class JsonContracts
         }
 
         return result;
-    }
-
-    private static bool GetOptionalBoolean(JsonElement root, string name)
-    {
-        JsonElement? value = FindProperty(root, name);
-        return value is not null && value.Value.ValueKind == JsonValueKind.True;
     }
 
     private static string GetAgentBinaryVersion(string agentRoot)

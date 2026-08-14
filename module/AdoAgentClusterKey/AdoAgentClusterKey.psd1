@@ -1,6 +1,6 @@
 @{
     RootModule = 'AdoAgentClusterKey.psm1'
-    ModuleVersion = '0.2.0'
+    ModuleVersion = '0.3.0'
     GUID = 'e9684e0b-d7a5-4ba9-a18f-ab23ebfd9f04'
     Author = 'AdoAgentClusterKey maintainers'
     CompanyName = 'Community'

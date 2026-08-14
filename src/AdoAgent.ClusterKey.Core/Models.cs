@@ -30,9 +30,7 @@ public sealed record RuntimeConfiguration(
     string SealedKeyPath,
     string ExpectedAgentId,
     string ExpectedPublicKeySha256,
-    string TargetFileSddl,
-    string PublisherThumbprint,
-    bool AllowUnsigned);
+    string TargetFileSddl);
 
 public sealed record OperationResult(
     string Message,

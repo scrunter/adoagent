@@ -1,11 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = 'Release',
-    [string]$Version = '0.2.0',
+    [string]$Version = '0.3.0',
     [string]$OutputPath,
-    [string]$CertificateThumbprint,
-    [string]$TimestampServer = 'http://timestamp.digicert.com',
-    [switch]$LabUnsigned,
     [switch]$SkipTests
 )
 
@@ -14,10 +11,6 @@ $repositoryRoot = Split-Path -Parent $PSScriptRoot
 if (-not $OutputPath) { $OutputPath = Join-Path $repositoryRoot 'artifacts' }
 $packagePath = Join-Path $OutputPath "AdoAgentClusterKey-$Version-win-x64"
 $publishPath = Join-Path $OutputPath 'publish'
-
-if (-not $LabUnsigned -and [string]::IsNullOrWhiteSpace($CertificateThumbprint)) {
-    throw 'A production release requires -CertificateThumbprint. Use -LabUnsigned only for nonproduction evaluation.'
-}
 
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
 if (Test-Path -LiteralPath $packagePath) { Remove-Item -LiteralPath $packagePath -Recurse -Force }
@@ -48,6 +41,7 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot 'cluster\AdoAgentClusterKey.vb
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.psm1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.psd1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.Setup.ps1') -Destination $packagePath
+Copy-Item -LiteralPath (Join-Path $repositoryRoot 'setup\Install-AdoAgentCluster.ps1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'setup\Initialize-AdoAgentCluster.ps1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'build\Test-Release.ps1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination $packagePath
@@ -61,16 +55,10 @@ $versionInfo = [ordered]@{
     targetFramework = 'net10.0-windows'
     nativeAot = $true
     builtUtc = [DateTime]::UtcNow.ToString('o')
-    labUnsigned = [bool]$LabUnsigned
+    integrity = 'SHA256 release manifest and locked deployment ACLs'
 }
 $utf8 = New-Object Text.UTF8Encoding($false)
 [IO.File]::WriteAllText((Join-Path $packagePath 'version.json'), ($versionInfo | ConvertTo-Json -Depth 5), $utf8)
-if ($LabUnsigned) {
-    [IO.File]::WriteAllText((Join-Path $packagePath 'UNSIGNED-LAB-ONLY.txt'), 'LAB ONLY: this release was deliberately built without production Authenticode signatures.', $utf8)
-}
-else {
-    & (Join-Path $PSScriptRoot 'Sign-Release.ps1') -PackagePath $packagePath -CertificateThumbprint $CertificateThumbprint -TimestampServer $TimestampServer -AuthenticodeOnly
-}
 
 $sbomFiles = @()
 $sbomIndex = 0
@@ -99,12 +87,10 @@ foreach ($file in Get-ChildItem -LiteralPath $packagePath -File -Recurse | Where
 $releaseManifest = [ordered]@{ schemaVersion = 1; product = 'AdoAgentClusterKey'; version = $Version; createdUtc = [DateTime]::UtcNow.ToString('o'); files = $hashes }
 [IO.File]::WriteAllText((Join-Path $packagePath 'RELEASE-MANIFEST.json'), ($releaseManifest | ConvertTo-Json -Depth 10), $utf8)
 
-if (-not $LabUnsigned) {
-    & (Join-Path $PSScriptRoot 'Sign-Release.ps1') -PackagePath $packagePath -CertificateThumbprint $CertificateThumbprint -TimestampServer $TimestampServer -ManifestOnly
-    if ($LASTEXITCODE -ne 0) { throw 'Release signing failed.' }
-}
-
 $zipPath = Join-Path $OutputPath "AdoAgentClusterKey-$Version-win-x64.zip"
 if (Test-Path -LiteralPath $zipPath) { Remove-Item -LiteralPath $zipPath -Force }
 Compress-Archive -Path (Join-Path $packagePath '*') -DestinationPath $zipPath -CompressionLevel Optimal
-Write-Output ([pscustomobject]@{ PackagePath = $packagePath; ZipPath = $zipPath; Version = $Version; LabUnsigned = [bool]$LabUnsigned })
+$zipSha256 = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
+$zipHashPath = $zipPath + '.sha256'
+[IO.File]::WriteAllText($zipHashPath, $zipSha256 + '  ' + [IO.Path]::GetFileName($zipPath), $utf8)
+Write-Output ([pscustomobject]@{ PackagePath = $packagePath; ZipPath = $zipPath; ZipSha256 = $zipSha256; ZipHashPath = $zipHashPath; Version = $Version })

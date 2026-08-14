@@ -12,7 +12,7 @@ For a new agent, an external deployment service first supplies a short-lived Azu
 2. Plaintext RSA JSON exists only in helper-controlled memory. The helper validates file-backed mode, imports only the public components to calculate SHA-256 over DER SubjectPublicKeyInfo, and zeroes plaintext buffers.
 3. The helper creates one DPAPI-NG envelope with descriptor `SID=<protector-group-sid>`. The envelope and nonsecret manifest go to administrator-controlled escrow.
 4. An authorized provisioning identity unwraps the envelope on each possible owner and immediately re-protects the exact JSON with classic `LocalMachine` DPAPI. Each resulting ciphertext is usable only on that node.
-5. At runtime, WSFC brings the shared disk online. The Generic Script invokes `activate`; the helper validates configuration, its Authenticode signer, the `.agent` identity, the node blob, paths, and public-key fingerprint. It replaces the shared key with `MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH)` and reapplies the captured DACL/owner/group SDDL plus Hidden attribute.
+5. At runtime, WSFC brings the shared disk online. The Generic Script invokes `activate`; the helper validates configuration, the `.agent` identity, the node blob, paths, and public-key fingerprint. It replaces the shared key with `MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH)` and reapplies the captured DACL/owner/group SDDL plus Hidden attribute.
 6. Only after a successful selector `Online` does WSFC start the Generic Service.
 
 | Process | Normal identity | Access required |
@@ -35,7 +35,7 @@ flowchart TB
       E["Escrow envelope + manifest"]
     end
     subgraph Node["Node-local SYSTEM/Admin boundary"]
-      P["Signed package"]
+      P["Controlled release package"]
       C["config.json"]
       N["node DPAPI sealed blob"]
     end
@@ -62,8 +62,8 @@ Pipeline code is considered hostile to local machine credentials. It must not be
 - Exact `.agent` identity matching prevents accidental use with another logical agent.
 - The public fingerprint detects substitution even when a ciphertext is decryptable on the current node.
 - Quick probes compare ciphertext without decrypting. Full probes additionally decrypt and fingerprint.
-- Production runtime verifies the helper's Authenticode chain through `WinVerifyTrust` and pins the leaf signer thumbprint.
-- Setup independently verifies every packaged executable and script before installation and again on each remote node.
+- The controlled build emits a recursive SHA-256 manifest and companion ZIP checksum. Operators compare the ZIP hash with a value retained through an approved distribution/change-control channel before extraction.
+- Node installation hashes each runtime executable/script at the source and verifies the copied bytes before locking the Program Files ACL to SYSTEM and Administrators.
 - Errors and JSON contain only operational metadata. They never emit RSA parameters, DPAPI blobs, envelopes, or credentials.
 - The key resource has no Azure DevOps/network health check, so a service outage cannot cause selector-driven failover storms.
 
@@ -72,9 +72,9 @@ Pipeline code is considered hostile to local machine credentials. It must not be
 | Threat | Control | Residual risk |
 |---|---|---|
 | Copy one DPAPI blob to another node | per-node sealing and full fingerprint probe | an attacker with SYSTEM on the source can use the active key while that node is compromised |
-| Substitute another agent's key | expected agent ID and SPKI fingerprint | administrators can deliberately replace configuration and package; protect signing and ACL administration |
+| Substitute another agent's key | expected agent ID and SPKI fingerprint | administrators can deliberately replace configuration and package; protect artifact distribution and ACL administration |
 | Redirect SYSTEM write with a link | exact target, reparse rejection, opened-handle final-path validation, same-directory atomic replace | a principal able to rename the entire agent root concurrently remains highly privileged; remove write permission on root metadata from pipeline identities |
-| Tamper with helper or VBS | Authenticode chain checks, publisher pinning, locked Program Files ACL | certificate compromise requires certificate revocation, toolkit rotation, and node repair |
+| Tamper with helper or VBS | approved ZIP hash, release manifest, copy-time hash comparison, and locked Program Files ACL | the manifest is not authenticated; compromise of the build/distribution channel or a node administrator can substitute both code and hashes |
 | Steal escrow | DPAPI-NG group authorization and secure external ACLs | protector-group compromise permits key recovery |
 | Capture plaintext in logs | fixed sanitized messages, no exception details for unexpected errors, output tests | memory-dump access to the provisioning/helper process remains privileged and in scope for OS controls |
 | Run two agent sessions | one clustered Generic Service, Manual SCM startup, recovery disabled, aligned owners/dependencies | a privileged operator can manually start an unmanaged duplicate; audit SCM and pool sessions |
@@ -92,4 +92,4 @@ Pipeline code is considered hostile to local machine credentials. It must not be
 
 ## Failure behavior
 
-Any invalid configuration, missing/corrupt or wrong-node blob, unexpected identity, signature failure, unsupported key mode, or additional protected credential store causes selector `Online` to fail. The Generic Service dependency then remains offline. `Offline` and `Terminate` retain the node-protected active file; the next owner always replaces it before service start.
+Any invalid configuration, missing/corrupt or wrong-node blob, unexpected identity, unsupported key mode, or additional protected credential store causes selector `Online` to fail. The Generic Service dependency then remains offline. `Offline` and `Terminate` retain the node-protected active file; the next owner always replaces it before service start.

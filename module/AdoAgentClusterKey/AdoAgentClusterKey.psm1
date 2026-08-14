@@ -58,6 +58,7 @@ function Get-AdoPackageFiles {
         'AdoAgentClusterKey.psm1',
         'AdoAgentClusterKey.psd1',
         'AdoAgentClusterKey.Setup.ps1',
+        'Install-AdoAgentCluster.ps1',
         'Initialize-AdoAgentCluster.ps1'
     )
     foreach ($name in $required) {
@@ -69,28 +70,19 @@ function Get-AdoPackageFiles {
     return Get-ChildItem -LiteralPath $PackagePath -File | Where-Object { $_.Extension -in @('.exe', '.dll', '.ps1', '.psm1', '.psd1', '.vbs') }
 }
 
-function Assert-AdoSignatures {
-    param(
-        [Parameter(Mandatory = $true)][string]$PackagePath,
-        [string]$PublisherThumbprint,
-        [switch]$LabAllowUnsigned
-    )
-    $files = @(Get-AdoPackageFiles -PackagePath $PackagePath)
-    if ($LabAllowUnsigned) {
-        Write-Warning 'LAB ONLY: Authenticode enforcement is disabled. This warning will be persisted on every node.'
-        return
+function Test-AdoReleasePackage {
+    param([Parameter(Mandatory = $true)][string]$PackagePath)
+    Get-AdoPackageFiles -PackagePath $PackagePath | Out-Null
+    $verifier = Join-Path $PackagePath 'Test-Release.ps1'
+    $manifest = Join-Path $PackagePath 'RELEASE-MANIFEST.json'
+    if (-not (Test-Path -LiteralPath $verifier -PathType Leaf) -or -not (Test-Path -LiteralPath $manifest -PathType Leaf)) {
+        throw 'The package must contain Test-Release.ps1 and RELEASE-MANIFEST.json.'
     }
-    if ([string]::IsNullOrWhiteSpace($PublisherThumbprint)) {
-        throw 'PublisherThumbprint is required unless -LabAllowUnsigned is explicitly selected.'
+    $verification = & $verifier -PackagePath $PackagePath
+    if ($null -eq $verification -or -not [bool]$verification.Valid) {
+        throw 'Release package SHA-256 verification did not return a valid result.'
     }
-    $expected = ($PublisherThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
-    foreach ($file in $files) {
-        $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
-        $actual = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint.ToUpperInvariant() } else { '' }
-        if ($signature.Status -ne 'Valid' -or $actual -ne $expected) {
-            throw "Authenticode validation failed for '$($file.Name)' or its signer does not match PublisherThumbprint."
-        }
-    }
+    return $verification
 }
 
 function Invoke-AdoKeyHelper {
@@ -262,9 +254,7 @@ function New-AdoRollbackSnapshot {
 function Install-AdoPackageOnNode {
     param(
         [Parameter(Mandatory = $true)][string]$Node,
-        [Parameter(Mandatory = $true)][string]$PackagePath,
-        [string]$PublisherThumbprint,
-        [switch]$LabAllowUnsigned
+        [Parameter(Mandatory = $true)][string]$PackagePath
     )
     $expectedHashes = @(Get-AdoPackageFiles -PackagePath $PackagePath | ForEach-Object { [pscustomobject]@{ Name = $_.Name; Sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash } })
     $session = $null
@@ -278,16 +268,7 @@ function Install-AdoPackageOnNode {
         }
         Copy-Item -Path (Join-Path $PackagePath '*') -Destination $staging -Recurse -Force -ToSession $session
         Invoke-Command -Session $session -ScriptBlock {
-            param($stagingPath, $installRoot, $expectedThumbprint, $allowUnsigned, $hashes)
-            $files = Get-ChildItem -LiteralPath $stagingPath -File | Where-Object { $_.Extension -in @('.exe', '.dll', '.ps1', '.psm1', '.psd1', '.vbs') }
-            if (-not $allowUnsigned) {
-                $expected = ($expectedThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
-                foreach ($file in $files) {
-                    $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
-                    $actual = if ($null -ne $signature.SignerCertificate) { $signature.SignerCertificate.Thumbprint.ToUpperInvariant() } else { '' }
-                    if ($signature.Status -ne 'Valid' -or $actual -ne $expected) { throw "Signature verification failed for '$($file.Name)' on $env:COMPUTERNAME." }
-                }
-            }
+            param($stagingPath, $installRoot, $hashes)
             New-Item -ItemType Directory -Path $installRoot -Force | Out-Null
             Copy-Item -Path (Join-Path $stagingPath '*') -Destination $installRoot -Recurse -Force
             foreach ($expectedFile in $hashes) {
@@ -299,13 +280,8 @@ function Install-AdoPackageOnNode {
             & icacls.exe $installRoot '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Unable to protect the toolkit Program Files ACL.' }
             $warningPath = Join-Path $installRoot 'UNSIGNED-LAB-ONLY.txt'
-            if ($allowUnsigned) {
-                Set-Content -LiteralPath $warningPath -Value 'LAB ONLY: Authenticode enforcement was explicitly disabled during installation.' -Encoding Ascii
-            }
-            elseif (Test-Path -LiteralPath $warningPath) {
-                Remove-Item -LiteralPath $warningPath -Force
-            }
-        } -ArgumentList $staging, $script:InstallRoot, $PublisherThumbprint, ([bool]$LabAllowUnsigned), $expectedHashes
+            if (Test-Path -LiteralPath $warningPath) { Remove-Item -LiteralPath $warningPath -Force }
+        } -ArgumentList $staging, $script:InstallRoot, $expectedHashes
     }
     finally {
         if ($null -ne $session) {
@@ -376,8 +352,6 @@ function Set-AdoNodeKeyMaterial {
         [Parameter(Mandatory = $true)]$Inspection,
         [Parameter(Mandatory = $true)][string]$ResourceName,
         [Parameter(Mandatory = $true)][string]$AgentRoot,
-        [string]$PublisherThumbprint,
-        [switch]$LabAllowUnsigned,
         [Parameter(Mandatory = $true)][string]$RollbackJson,
         [switch]$PreserveExisting
     )
@@ -393,7 +367,7 @@ function Set-AdoNodeKeyMaterial {
         Copy-Item -LiteralPath $EnvelopePath -Destination (Join-Path $temporary 'escrow.bin') -ToSession $session
         Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $temporary 'manifest.json') -ToSession $session
         Invoke-Command -Session $session -ScriptBlock {
-            param($configId, $temporaryPath, $resourceName, $agentRoot, $inspectionData, $publisher, $allowUnsigned, $rollback, $preserveExisting)
+            param($configId, $temporaryPath, $resourceName, $agentRoot, $inspectionData, $rollback, $preserveExisting)
             $configDirectory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $configId
             New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
             $sealedPath = Join-Path $configDirectory 'sealed.credentials_rsaparams'
@@ -404,18 +378,18 @@ function Set-AdoNodeKeyMaterial {
                     [string]$existing.resourceName -eq $resourceName -and
                     [string]$existing.agentRoot -eq $agentRoot -and
                     [string]$existing.expectedAgentId -eq [string]$inspectionData.agentId -and
-                    [string]$existing.expectedPublicKeySha256 -eq [string]$inspectionData.publicKeySha256 -and
-                    [string]$existing.publisherThumbprint -eq [string]$publisher -and
-                    [bool]$existing.allowUnsigned -eq [bool]$allowUnsigned
+                    [string]$existing.expectedPublicKeySha256 -eq [string]$inspectionData.publicKeySha256
                 if (-not $same) { throw 'Existing ConfigId artifacts do not match the requested installation.' }
                 $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
+                $existing.PSObject.Properties.Remove('publisherThumbprint')
+                $existing.PSObject.Properties.Remove('allowUnsigned')
+                [IO.File]::WriteAllText($configPath, ($existing | ConvertTo-Json -Depth 5), $utf8WithoutBom)
                 $rollbackPath = Join-Path $configDirectory 'rollback.json'
                 if (-not (Test-Path -LiteralPath $rollbackPath -PathType Leaf)) { [IO.File]::WriteAllText($rollbackPath, $rollback, $utf8WithoutBom) }
                 & icacls.exe $configDirectory '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
                 if ($LASTEXITCODE -ne 0) { throw 'Unable to protect the existing ConfigId directory ACL.' }
                 $warningPath = Join-Path $configDirectory 'UNSIGNED-LAB-ONLY.txt'
-                if ($allowUnsigned) { [IO.File]::WriteAllText($warningPath, 'LAB ONLY: unsigned toolkit execution is enabled in config.json.', $utf8WithoutBom) }
-                elseif (Test-Path -LiteralPath $warningPath) { Remove-Item -LiteralPath $warningPath -Force }
+                if (Test-Path -LiteralPath $warningPath) { Remove-Item -LiteralPath $warningPath -Force }
                 return
             }
             $arguments = @('seal', '--envelope', (Join-Path $temporaryPath 'escrow.bin'), '--manifest', (Join-Path $temporaryPath 'manifest.json'), '--config-id', $configId, '--force', '--json')
@@ -431,18 +405,13 @@ function Set-AdoNodeKeyMaterial {
                 expectedAgentId = [string]$inspectionData.agentId
                 expectedPublicKeySha256 = [string]$inspectionData.publicKeySha256
                 targetFileSddl = [string]$inspectionData.targetFileSddl
-                publisherThumbprint = [string]$publisher
-                allowUnsigned = [bool]$allowUnsigned
             }
             $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
             [IO.File]::WriteAllText($configPath, ($configuration | ConvertTo-Json -Depth 5), $utf8WithoutBom)
             [IO.File]::WriteAllText((Join-Path $configDirectory 'rollback.json'), $rollback, $utf8WithoutBom)
             & icacls.exe $configDirectory '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Unable to protect the ConfigId directory ACL.' }
-            if ($allowUnsigned) {
-                Set-Content -LiteralPath (Join-Path $configDirectory 'UNSIGNED-LAB-ONLY.txt') -Value 'LAB ONLY: unsigned toolkit execution is enabled in config.json.' -Encoding Ascii
-            }
-        } -ArgumentList $ConfigId.ToString('D'), $temporary, $ResourceName, $AgentRoot, $Inspection.data, $PublisherThumbprint, ([bool]$LabAllowUnsigned), $RollbackJson, ([bool]$PreserveExisting)
+        } -ArgumentList $ConfigId.ToString('D'), $temporary, $ResourceName, $AgentRoot, $Inspection.data, $RollbackJson, ([bool]$PreserveExisting)
     }
     finally {
         if ($null -ne $session) {
@@ -450,6 +419,38 @@ function Set-AdoNodeKeyMaterial {
             Remove-PSSession -Session $session
         }
     }
+}
+
+function Remove-AdoLegacySigningStateOnNode {
+    param(
+        [Parameter(Mandatory = $true)][string]$Node,
+        [Parameter(Mandatory = $true)][Guid]$ConfigId
+    )
+    Invoke-Command -ComputerName $Node -ScriptBlock {
+        param($id)
+        $configDirectory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $id
+        $configPath = Join-Path $configDirectory 'config.json'
+        if (Test-Path -LiteralPath $configPath -PathType Leaf) {
+            $configuration = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+            $changed = $false
+            foreach ($propertyName in @('publisherThumbprint', 'allowUnsigned')) {
+                if ($configuration.PSObject.Properties.Name -contains $propertyName) {
+                    $configuration.PSObject.Properties.Remove($propertyName)
+                    $changed = $true
+                }
+            }
+            if ($changed) {
+                $temporary = $configPath + '.tmp.' + [Guid]::NewGuid().ToString('N')
+                try {
+                    [IO.File]::WriteAllText($temporary, ($configuration | ConvertTo-Json -Depth 5), (New-Object Text.UTF8Encoding($false)))
+                    Move-Item -LiteralPath $temporary -Destination $configPath -Force
+                }
+                finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
+            }
+        }
+        $warningPath = Join-Path $configDirectory 'UNSIGNED-LAB-ONLY.txt'
+        if (Test-Path -LiteralPath $warningPath) { Remove-Item -LiteralPath $warningPath -Force }
+    } -ArgumentList $ConfigId.ToString('D')
 }
 
 function Set-AdoClusterPrivateParameter {
@@ -512,10 +513,8 @@ function Test-AdoAgentClusterPrerequisite {
         [Parameter(Mandatory = $true)][string]$ProtectorGroup,
         [string[]]$Node,
         [string]$PackagePath,
-        [string]$PublisherThumbprint,
         [string]$ServiceIdentity,
         [string]$WorkDirectory = '_work',
-        [switch]$LabAllowUnsigned,
         [switch]$ThrowOnFailure
     )
     $checks = New-Object System.Collections.Generic.List[object]
@@ -553,14 +552,14 @@ function Test-AdoAgentClusterPrerequisite {
     }
     if ($PackagePath) {
         try {
-            Assert-AdoSignatures -PackagePath $PackagePath -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned
-            Add-Check 'PackageSignatures' $true 'Package signature policy passed.'
+            $verification = Test-AdoReleasePackage -PackagePath $PackagePath
+            Add-Check 'PackageIntegrity' $true "Version=$($verification.Version) Files=$($verification.FileCount)"
             $inspection = Invoke-AdoKeyHelper -Executable (Join-Path $PackagePath 'AdoAgent.ClusterKey.exe') -Arguments @('inspect', '--agent-root', $AgentRoot, '--json')
             Add-Check 'FileBackedRsa' ($inspection.data.keyStorage -eq 'file') "Storage=$($inspection.data.keyStorage)"
             Add-Check 'AdditionalCredentials' (@($inspection.data.additionalCredentialStores).Count -eq 0) "Detected=$($inspection.data.additionalCredentialStores -join ',')"
         }
         catch {
-            Add-Check 'PackageSignaturesOrInspection' $false $_.Exception.Message
+            Add-Check 'PackageFilesOrInspection' $false $_.Exception.Message
         }
     }
     $passed = @($checks | Where-Object { -not $_.Passed }).Count -eq 0
@@ -581,15 +580,13 @@ function Install-AdoAgentCluster {
         [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
         [string[]]$Node,
         [Guid]$ConfigId = [Guid]::Empty,
-        [string]$PublisherThumbprint,
         [string]$KeyResourceName,
         [string]$ServiceResourceName,
-        [System.Management.Automation.PSCredential]$ServiceCredential,
-        [switch]$LabAllowUnsigned
+        [System.Management.Automation.PSCredential]$ServiceCredential
     )
     Assert-AdoElevated
     Import-Module FailoverClusters -ErrorAction Stop
-    Assert-AdoSignatures -PackagePath $PackagePath -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned
+    Test-AdoReleasePackage -PackagePath $PackagePath | Out-Null
     if ($ConfigId -eq [Guid]::Empty) { $ConfigId = [Guid]::NewGuid() }
     if (-not $KeyResourceName) { $KeyResourceName = "$ClusterRoleName - Key Selector" }
     if (-not $ServiceResourceName) { $ServiceResourceName = "$ClusterRoleName - ADO Agent" }
@@ -599,13 +596,13 @@ function Install-AdoAgentCluster {
     if (-not $Node) { $Node = @(Get-AdoPossibleOwners -Resource $disk) }
     $diskOwners = @(Get-AdoPossibleOwners -Resource $disk)
     foreach ($name in $Node) { if ($diskOwners -notcontains $name) { throw "Node '$name' is not a possible owner of '$SharedDiskResourceName'." } }
-    $prerequisite = Test-AdoAgentClusterPrerequisite -AgentRoot $AgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -Node $Node -PackagePath $PackagePath -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned -ThrowOnFailure
+    $service = Get-AdoAgentServiceDefinition -AgentRoot $AgentRoot
+    $prerequisite = Test-AdoAgentClusterPrerequisite -AgentRoot $AgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -Node $Node -PackagePath $PackagePath -ServiceIdentity $service.StartName -ThrowOnFailure
     $sid = Resolve-AdoGroupSid -Identity $ProtectorGroup
     $helper = Join-Path $PackagePath 'AdoAgent.ClusterKey.exe'
     $inspection = Invoke-AdoKeyHelper -Executable $helper -Arguments @('inspect', '--agent-root', $AgentRoot, '--json')
     if ($inspection.data.keyStorage -ne 'file') { throw 'The agent uses a named CSP/CNG container. Perform the documented one-time file-mode re-registration first.' }
     if (@($inspection.data.additionalCredentialStores).Count -gt 0) { throw "Unsupported credential stores detected: $($inspection.data.additionalCredentialStores -join ', ')." }
-    $service = Get-AdoAgentServiceDefinition -AgentRoot $AgentRoot
     if (-not (Test-Path -LiteralPath $EscrowPath -PathType Container)) { throw 'EscrowPath must be a pre-created administrator-controlled directory.' }
     $resolvedEscrow = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $EscrowPath).Path).TrimEnd('\')
     $resolvedAgentRoot = [IO.Path]::GetFullPath((Resolve-Path -LiteralPath $AgentRoot).Path).TrimEnd('\')
@@ -640,9 +637,9 @@ function Install-AdoAgentCluster {
         Invoke-AdoKeyHelper -Executable $helper -Arguments @('export', '--agent-root', $AgentRoot, '--protector-sid', $sid, '--envelope', $envelope, '--manifest', $manifest, '--json') | Out-Null
     }
     foreach ($clusterNode in $Node) {
-        Install-AdoPackageOnNode -Node $clusterNode -PackagePath $PackagePath -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned
+        Install-AdoPackageOnNode -Node $clusterNode -PackagePath $PackagePath
         Set-AdoNodeService -Node $clusterNode -Definition $service -ServiceCredential $ServiceCredential
-        Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $envelope -ManifestPath $manifest -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned -RollbackJson $rollbackJson -PreserveExisting
+        Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $envelope -ManifestPath $manifest -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson -PreserveExisting
     }
     $resources = Set-AdoClusterResources -RoleName $ClusterRoleName -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -SharedDiskResourceName $SharedDiskResourceName -ServiceName $service.Name -ConfigId $ConfigId -Node $Node
     [pscustomobject]@{ ConfigId = $ConfigId; EnvelopePath = $envelope; ManifestPath = $manifest; Nodes = $Node; KeyResource = $resources.Key.Name; ServiceResource = $resources.Service.Name }
@@ -662,12 +659,11 @@ function Add-AdoAgentClusterNode {
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$PackagePath,
         [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
-        [string]$PublisherThumbprint,
-        [System.Management.Automation.PSCredential]$ServiceCredential,
-        [switch]$LabAllowUnsigned
+        [System.Management.Automation.PSCredential]$ServiceCredential
     )
     Assert-AdoElevated
     Import-Module FailoverClusters -ErrorAction Stop
+    Test-AdoReleasePackage -PackagePath $PackagePath | Out-Null
     Assert-AdoRoleIdle -RoleName $ClusterRoleName -ServiceResourceName $ServiceResourceName -KeyResourceName $KeyResourceName -ConfirmAgentIdle:$ConfirmAgentIdle | Out-Null
     $disk = Get-ClusterResource -Name $SharedDiskResourceName
     if ((Get-AdoPossibleOwners -Resource $disk) -notcontains $Node) { throw "Node '$Node' must first be a possible owner of '$SharedDiskResourceName'." }
@@ -678,9 +674,9 @@ function Add-AdoAgentClusterNode {
     $rollbackPath = Join-Path (Join-Path $script:ConfigRoot $ConfigId.ToString('D')) 'rollback.json'
     $rollbackJson = Get-Content -LiteralPath $rollbackPath -Raw
     if (-not $PSCmdlet.ShouldProcess($Node, "enroll as a possible owner for ConfigId $ConfigId")) { return }
-    Install-AdoPackageOnNode -Node $Node -PackagePath $PackagePath -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned
+    Install-AdoPackageOnNode -Node $Node -PackagePath $PackagePath
     Set-AdoNodeService -Node $Node -Definition $service -ServiceCredential $ServiceCredential
-    Set-AdoNodeKeyMaterial -Node $Node -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned -RollbackJson $rollbackJson -PreserveExisting
+    Set-AdoNodeKeyMaterial -Node $Node -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson -PreserveExisting
     $owners = @((Get-AdoPossibleOwners -Resource (Get-ClusterResource -Name $KeyResourceName)) + $Node | Select-Object -Unique)
     Set-AdoClusterResources -RoleName $ClusterRoleName -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -SharedDiskResourceName $SharedDiskResourceName -ServiceName $service.Name -ConfigId $ConfigId -Node $owners | Out-Null
 }
@@ -697,17 +693,15 @@ function Repair-AdoAgentCluster {
         [Parameter(Mandatory = $true)][string]$PackagePath,
         [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
         [string[]]$Node,
-        [string]$PublisherThumbprint,
         [string]$EnvelopePath,
         [string]$ManifestPath,
         [switch]$Reseal,
-        [System.Management.Automation.PSCredential]$ServiceCredential,
-        [switch]$LabAllowUnsigned
+        [System.Management.Automation.PSCredential]$ServiceCredential
     )
     Assert-AdoElevated
     Import-Module FailoverClusters -ErrorAction Stop
     Assert-AdoRoleIdle -RoleName $ClusterRoleName -ServiceResourceName $ServiceResourceName -KeyResourceName $KeyResourceName -ConfirmAgentIdle:$ConfirmAgentIdle | Out-Null
-    Assert-AdoSignatures -PackagePath $PackagePath -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned
+    Test-AdoReleasePackage -PackagePath $PackagePath | Out-Null
     if (-not $Node) { $Node = @(Get-AdoPossibleOwners -Resource (Get-ClusterResource -Name $SharedDiskResourceName)) }
     $configPath = Join-Path (Join-Path $script:ConfigRoot $ConfigId.ToString('D')) 'config.json'
     $configuration = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
@@ -717,11 +711,12 @@ function Repair-AdoAgentCluster {
     if ($Reseal -and (-not $EnvelopePath -or -not $ManifestPath)) { throw '-EnvelopePath and -ManifestPath are required with -Reseal.' }
     if (-not $PSCmdlet.ShouldProcess($ClusterRoleName, "repair ConfigId $ConfigId on $($Node -join ', ')")) { return }
     foreach ($clusterNode in $Node) {
-        Install-AdoPackageOnNode -Node $clusterNode -PackagePath $PackagePath -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned
+        Install-AdoPackageOnNode -Node $clusterNode -PackagePath $PackagePath
         Set-AdoNodeService -Node $clusterNode -Definition $service -ServiceCredential $ServiceCredential
         if ($Reseal) {
-            Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned -RollbackJson $rollbackJson
+            Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson
         }
+        Remove-AdoLegacySigningStateOnNode -Node $clusterNode -ConfigId $ConfigId
         $nodeReady = Invoke-Command -ComputerName $clusterNode -ScriptBlock {
             param($id)
             $directory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $id

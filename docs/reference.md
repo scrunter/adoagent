@@ -1,5 +1,27 @@
 # CLI, schema, and WSFC reference
 
+## Existing-agent full installation script
+
+```text
+Install-AdoAgentCluster.ps1
+  -AgentRoot <shared-path>
+  -ClusterRoleName <role>
+  -SharedDiskResourceName <disk-resource>
+  -ProtectorGroup <domain-group>
+  -EscrowPath <path>
+  -ConfirmAgentIdle
+  [-ToolkitPackagePath <release-folder>]
+  [-ConfigId <guid>]
+  [-KeyResourceName <name>]
+  [-ServiceResourceName <name>]
+  [-ServiceCredential <PSCredential>]
+  [-WhatIf] [-Confirm]
+```
+
+Run this script on the current role/shared-disk owner for an already registered agent. It intentionally has no `Node` parameter: the node set is every possible owner returned by `Get-ClusterOwnerNode` for the shared-disk resource. Every node must be Up and pass preflight. The script validates the release manifest, calls the module installer with that complete set, and leaves the clustered role Offline.
+
+`ToolkitPackagePath` defaults to the directory containing the packaged script. `ConfigId` defaults to a new GUID, but operators should generate and record it before `-WhatIf` so the same identity is used for the actual run and any retry.
+
 ## New-agent setup script
 
 ```text
@@ -16,11 +38,11 @@ Initialize-AdoAgentCluster.ps1
   [-RegistrationCredential <PSCredential>]
   [-ServiceCredential <PSCredential>]
   [-WorkDirectory <relative-path>] [-Node <node[]>] [-ConfigId <guid>]
-  [-PublisherThumbprint <thumbprint>] [-ToolkitPackagePath <release-folder>]
+  [-ToolkitPackagePath <release-folder>]
   [-AgentPackagePath <zip> -AgentPackageSha256 <sha256>]
   [-KeyResourceName <name>] [-ServiceResourceName <name>]
   [-Resume] [-ReplaceExistingAgent] [-AllowInsecureServerUrl]
-  [-LabAllowUnsigned] [-WhatIf]
+  [-WhatIf]
 ```
 
 Authentication rules:
@@ -71,7 +93,7 @@ Path: `<EscrowPath>\<ConfigId>.setup.json`
 }
 ```
 
-The immutable object also records the offline package choice, publisher thumbprint, and signing/insecure-URL switches. It contains no token, password, RSA data, protected blob, or envelope content. Valid phases are `Preflight`, `PackageStaged`, `RegisteredStopped`, `KeyValidated`, `ClusterInstalled`, and `Complete`.
+The immutable object also records the offline package choice and insecure-URL switch. It contains no token, password, RSA data, protected blob, or envelope content. Valid phases are `Preflight`, `PackageStaged`, `RegisteredStopped`, `KeyValidated`, `ClusterInstalled`, and `Complete`.
 
 ## Helper CLI
 
@@ -113,7 +135,7 @@ The output path is fixed; the release CLI does not accept an override.
 AdoAgent.ClusterKey.exe activate --config-id <guid> [--json]
 ```
 
-Reads runtime config from fixed ProgramData, verifies helper and VBS signers unless lab mode, validates exact paths/agent/additional credentials/sealed key/fingerprint, and atomically installs the node ciphertext. It returns `changed: false` when the correct ciphertext is already active.
+Reads runtime config from fixed ProgramData, validates exact paths/agent/additional credentials/sealed key/fingerprint, and atomically installs the node ciphertext. It returns `changed: false` when the correct ciphertext is already active.
 
 ### `probe`
 
@@ -156,9 +178,7 @@ Path: `C:\ProgramData\AdoAgentClusterKey\<ConfigId>\config.json`
   "sealedKeyPath": "C:\\ProgramData\\AdoAgentClusterKey\\11111111-2222-3333-4444-555555555555\\sealed.credentials_rsaparams",
   "expectedAgentId": "<exact-scalar-from-.agent>",
   "expectedPublicKeySha256": "<64-uppercase-hex-characters>",
-  "targetFileSddl": "<owner-group-dacl-sddl>",
-  "publisherThumbprint": "<normalized-or-spaced-thumbprint>",
-  "allowUnsigned": false
+  "targetFileSddl": "<owner-group-dacl-sddl>"
 }
 ```
 
@@ -171,8 +191,7 @@ Constraints:
 - ConfigId directory, sealed file, agent root, and active file must not be reparse points;
 - opened agent root/parent/active paths must resolve to their expected canonical locations;
 - `expectedAgentId` is a string representation, not necessarily a GUID;
-- fingerprint comparison and ciphertext comparison are fixed-time;
-- production requires nonempty pinned thumbprint and `allowUnsigned: false`.
+- fingerprint comparison and ciphertext comparison are fixed-time.
 
 ## Escrow manifest schema
 
@@ -198,7 +217,7 @@ It is nonsecret but integrity-sensitive. Keep it beside the envelope under escro
 |---|---|---|
 | `Initialize-AdoAgentCluster` | download/register a new stopped agent, then install cluster integration | deployment-supplied auth, nonsecret resume state, explicit replacement, `SupportsShouldProcess` |
 | `Test-AdoAgentClusterPrerequisite` | inventory/preflight | read-only, optional throw-on-failure |
-| `Install-AdoAgentCluster` | initial export, enrollment, services/resources | `SupportsShouldProcess`, idle confirmation, signature enforcement, rollback snapshot |
+| `Install-AdoAgentCluster` | initial export, enrollment, services/resources | `SupportsShouldProcess`, idle confirmation, source-to-node hash verification, rollback snapshot |
 | `Add-AdoAgentClusterNode` | package/service/sealed key on new owner | disk-owner prerequisite, DPAPI-NG authorization |
 | `Repair-AdoAgentCluster` | restore package/service/resource drift | optional explicit reseal, additive dependencies |
 | `Remove-AdoAgentClusterNode` | remove possible owner | refuses active/last owner, preserves sealed data by default |
@@ -244,4 +263,4 @@ The VBS uses no Cluster API calls and no network calls. Its only dynamic command
 
 ## Release files
 
-Production ZIP contains the Native AOT EXE, signed setup entry point, signed static scripts/module, docs, `version.json`, SPDX 2.3 SBOM, SHA-256 release manifest, and detached CMS signature. It contains no certificate private key, escrow, PAT, password, agent key, or environment-specific configuration.
+The release ZIP contains the Native AOT EXE, setup entry point, static scripts/module, docs, `version.json`, SPDX 2.3 SBOM, and recursive SHA-256 release manifest. The build also emits a companion ZIP checksum file. The package contains no escrow, PAT, password, agent key, or environment-specific configuration. Authenticode and detached CMS signatures are not required or validated.

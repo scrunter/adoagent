@@ -4,7 +4,10 @@ $manifestPath = Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClu
 $modulePath = Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.psm1'
 $setupModulePath = Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.Setup.ps1'
 $setupScriptPath = Join-Path $repositoryRoot 'setup\Initialize-AdoAgentCluster.ps1'
+$installScriptPath = Join-Path $repositoryRoot 'setup\Install-AdoAgentCluster.ps1'
 $vbsPath = Join-Path $repositoryRoot 'cluster\AdoAgentClusterKey.vbs'
+$buildPath = Join-Path $repositoryRoot 'build\Build.ps1'
+$releaseVerifierPath = Join-Path $repositoryRoot 'build\Test-Release.ps1'
 Import-Module $manifestPath -Force
 
 Describe 'AdoAgentClusterKey module contract' {
@@ -33,8 +36,8 @@ Describe 'AdoAgentClusterKey module contract' {
         }
     }
 
-    It 'parses the setup implementation and signed entry script' {
-        foreach ($path in @($setupModulePath, $setupScriptPath)) {
+    It 'parses the setup implementation and entry script' {
+        foreach ($path in @($setupModulePath, $setupScriptPath, $installScriptPath)) {
             $parseErrors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$parseErrors) | Out-Null
             @($parseErrors).Count | Should Be 0
@@ -68,24 +71,63 @@ Describe 'AdoAgentClusterKey module contract' {
     }
 }
 
-Describe 'Package signature policy' {
-    It 'rejects unsigned artifacts in production mode' {
-        $global:AdoSignatureTestPath = Join-Path $TestDrive 'package'
-        New-Item -ItemType Directory -Path $global:AdoSignatureTestPath | Out-Null
-        foreach ($name in @('AdoAgent.ClusterKey.exe','AdoAgentClusterKey.vbs','AdoAgentClusterKey.psm1','AdoAgentClusterKey.psd1','AdoAgentClusterKey.Setup.ps1','Initialize-AdoAgentCluster.ps1')) {
-            Set-Content -LiteralPath (Join-Path $global:AdoSignatureTestPath $name) -Value 'unsigned-test-file'
+Describe 'Package integrity policy' {
+    It 'accepts an unsigned package when all required files are present' {
+        $global:AdoPackageTestPath = Join-Path $TestDrive 'complete-package'
+        New-Item -ItemType Directory -Path $global:AdoPackageTestPath | Out-Null
+        foreach ($name in @('AdoAgent.ClusterKey.exe','AdoAgentClusterKey.vbs','AdoAgentClusterKey.psm1','AdoAgentClusterKey.psd1','AdoAgentClusterKey.Setup.ps1','Install-AdoAgentCluster.ps1','Initialize-AdoAgentCluster.ps1')) {
+            Set-Content -LiteralPath (Join-Path $global:AdoPackageTestPath $name) -Value 'unsigned-test-file'
         }
         InModuleScope AdoAgentClusterKey {
-            $threw = $false
-            try { Assert-AdoSignatures -PackagePath $global:AdoSignatureTestPath -PublisherThumbprint '0000000000000000000000000000000000000000' } catch { $threw = $true }
-            $threw | Should Be $true
+            { Get-AdoPackageFiles -PackagePath $global:AdoPackageTestPath | Out-Null } | Should Not Throw
         }
     }
 
-    It 'requires an explicit lab switch to accept unsigned artifacts' {
+    It 'rejects a package that is missing a required file' {
+        $global:AdoPackageTestPath = Join-Path $TestDrive 'incomplete-package'
+        New-Item -ItemType Directory -Path $global:AdoPackageTestPath | Out-Null
+        Set-Content -LiteralPath (Join-Path $global:AdoPackageTestPath 'AdoAgent.ClusterKey.exe') -Value 'test-file'
         InModuleScope AdoAgentClusterKey {
-            { Assert-AdoSignatures -PackagePath $global:AdoSignatureTestPath -LabAllowUnsigned } | Should Not Throw
+            { Get-AdoPackageFiles -PackagePath $global:AdoPackageTestPath | Out-Null } | Should Throw
         }
+    }
+
+    It 'does not expose Authenticode policy parameters on public commands' {
+        foreach ($name in @('Initialize-AdoAgentCluster', 'Test-AdoAgentClusterPrerequisite', 'Install-AdoAgentCluster', 'Add-AdoAgentClusterNode', 'Repair-AdoAgentCluster')) {
+            $parameters = (Get-Command $name).Parameters.Keys
+            ($parameters -contains 'PublisherThumbprint') | Should Be $false
+            ($parameters -contains 'LabAllowUnsigned') | Should Be $false
+        }
+    }
+
+    It 'builds one hash-manifest package type without signing inputs' {
+        $source = Get-Content -LiteralPath $buildPath -Raw
+        $source | Should Match 'RELEASE-MANIFEST\.json'
+        $source | Should Match '\.sha256'
+        $source | Should Not Match 'CertificateThumbprint'
+        $source | Should Not Match 'LabUnsigned'
+        $source | Should Not Match 'Sign-Release'
+    }
+
+    It 'detects changed and unlisted release files' {
+        $package = Join-Path $TestDrive 'release-package'
+        New-Item -ItemType Directory -Path $package | Out-Null
+        $file = Join-Path $package 'payload.txt'
+        Set-Content -LiteralPath $file -Value 'approved payload' -Encoding Ascii
+        $entry = [ordered]@{
+            path = 'payload.txt'
+            sha256 = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+            length = (Get-Item -LiteralPath $file).Length
+        }
+        $manifest = [ordered]@{ schemaVersion = 1; product = 'AdoAgentClusterKey'; version = 'test'; files = @($entry) }
+        $manifest | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $package 'RELEASE-MANIFEST.json') -Encoding UTF8
+
+        { & $releaseVerifierPath -PackagePath $package | Out-Null } | Should Not Throw
+        Set-Content -LiteralPath $file -Value 'changed payload' -Encoding Ascii
+        { & $releaseVerifierPath -PackagePath $package | Out-Null } | Should Throw
+        Set-Content -LiteralPath $file -Value 'approved payload' -Encoding Ascii
+        Set-Content -LiteralPath (Join-Path $package 'unlisted.txt') -Value 'unlisted' -Encoding Ascii
+        { & $releaseVerifierPath -PackagePath $package | Out-Null } | Should Throw
     }
 }
 

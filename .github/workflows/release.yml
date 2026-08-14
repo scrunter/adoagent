@@ -1,0 +1,173 @@
+name: Build and publish release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the leading v (for example, 0.4.0 or 0.4.0-rc.1)"
+        required: true
+        type: string
+      prerelease:
+        description: "Publish as a prerelease (versions containing a hyphen are always prereleases)"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: write
+
+concurrency:
+  group: "release-${{ github.ref }}-${{ inputs.version }}"
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build, verify, and publish
+    runs-on: windows-2025
+    timeout-minutes: 45
+    defaults:
+      run:
+        shell: pwsh
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Resolve release version
+        id: release
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+
+          if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            $version = $env:INPUT_VERSION
+          }
+          else {
+            if (-not $env:REF_NAME.StartsWith('v', [StringComparison]::Ordinal)) {
+              throw "Release tag '$env:REF_NAME' must start with 'v'."
+            }
+            $version = $env:REF_NAME.Substring(1)
+          }
+
+          $semVerPattern = '^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?(?:\+[0-9A-Za-z]+(?:[.-][0-9A-Za-z]+)*)?$'
+          if ($version -notmatch $semVerPattern) {
+            throw "Version '$version' is not a supported semantic version."
+          }
+
+          $isPrerelease = $version.Contains('-') -or $env:INPUT_PRERELEASE -eq 'true'
+          $artifactStem = "AdoAgentClusterKey-$version-win-x64"
+          "version=$version" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "tag=v$version" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "prerelease=$($isPrerelease.ToString().ToLowerInvariant())" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "artifact_stem=$artifactStem" | Out-File -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Install .NET SDK from global.json
+        uses: actions/setup-dotnet@v6
+        with:
+          global-json-file: global.json
+
+      - name: Build and test release package
+        env:
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          .\build\Build.ps1 -Version $env:RELEASE_VERSION
+
+      - name: Verify package and archive checksum
+        env:
+          ARTIFACT_STEM: ${{ steps.release.outputs.artifact_stem }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $packagePath = Join-Path 'artifacts' $env:ARTIFACT_STEM
+          $zipPath = "$packagePath.zip"
+          $checksumPath = "$zipPath.sha256"
+
+          .\build\Test-Release.ps1 -PackagePath $packagePath
+
+          $expectedLine = (Get-Content -LiteralPath $checksumPath -Raw).Trim()
+          $actualHash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash
+          $expectedLineValue = "$actualHash  $([IO.Path]::GetFileName($zipPath))"
+          if ($expectedLine -cne $expectedLineValue) {
+            throw 'The release ZIP does not match its companion SHA-256 file.'
+          }
+
+      - name: Retain workflow artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.release.outputs.artifact_stem }}
+          path: |
+            artifacts/${{ steps.release.outputs.artifact_stem }}.zip
+            artifacts/${{ steps.release.outputs.artifact_stem }}.zip.sha256
+            artifacts/${{ steps.release.outputs.artifact_stem }}/RELEASE-MANIFEST.json
+            artifacts/${{ steps.release.outputs.artifact_stem }}/sbom.spdx.json
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
+
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ steps.release.outputs.version }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_PRERELEASE: ${{ steps.release.outputs.prerelease }}
+          ARTIFACT_STEM: ${{ steps.release.outputs.artifact_stem }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $PSNativeCommandUseErrorActionPreference = $false
+
+          if ($env:EVENT_NAME -eq 'workflow_dispatch') {
+            $tagRef = "refs/tags/$env:RELEASE_TAG"
+            $existingRefJson = & gh api "repos/$env:GITHUB_REPOSITORY/git/ref/tags/$env:RELEASE_TAG" 2>$null
+            if ($LASTEXITCODE -eq 0) {
+              $existingRef = $existingRefJson | ConvertFrom-Json
+              if ($existingRef.object.type -ne 'commit' -or $existingRef.object.sha -ne $env:GITHUB_SHA) {
+                throw "Tag '$env:RELEASE_TAG' already exists and does not point directly to this workflow commit."
+              }
+            }
+            else {
+              & gh api --method POST "repos/$env:GITHUB_REPOSITORY/git/refs" -f "ref=$tagRef" -f "sha=$env:GITHUB_SHA" | Out-Null
+              if ($LASTEXITCODE -ne 0) { throw "Could not create tag '$env:RELEASE_TAG'." }
+            }
+          }
+
+          & gh release view $env:RELEASE_TAG --json url 2>$null | Out-Null
+          if ($LASTEXITCODE -eq 0) {
+            throw "GitHub Release '$env:RELEASE_TAG' already exists; release assets are never overwritten."
+          }
+
+          $packagePath = Join-Path 'artifacts' $env:ARTIFACT_STEM
+          $zipPath = "$packagePath.zip"
+          $checksumPath = "$zipPath.sha256"
+          $manifestPath = Join-Path $packagePath 'RELEASE-MANIFEST.json'
+          $sbomPath = Join-Path $packagePath 'sbom.spdx.json'
+          $checksum = (Get-Content -LiteralPath $checksumPath -Raw).Trim()
+          $notes = "Built from commit $env:GITHUB_SHA.`n`nArchive SHA-256: $checksum"
+
+          $arguments = @(
+            'release', 'create', $env:RELEASE_TAG,
+            $zipPath, $checksumPath, $manifestPath, $sbomPath,
+            '--verify-tag',
+            '--title', "AdoAgentClusterKey $env:RELEASE_VERSION",
+            '--notes', $notes,
+            '--generate-notes'
+          )
+          if ($env:RELEASE_PRERELEASE -eq 'true') {
+            $arguments += @('--prerelease', '--latest=false')
+          }
+
+          & gh @arguments
+          if ($LASTEXITCODE -ne 0) { throw "GitHub Release '$env:RELEASE_TAG' could not be published." }
+
+          "## Published $env:RELEASE_TAG" | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          "Release assets: ZIP, companion SHA-256, internal manifest, and SPDX SBOM." | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

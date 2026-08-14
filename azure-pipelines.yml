@@ -32,9 +32,9 @@ steps:
     displayName: Build and test
 
   - powershell: |
-      .\build\Build.ps1 -Version "0.2.$env:BUILD_BUILDID" -LabUnsigned -SkipTests
+      .\build\Build.ps1 -Version "0.3.$env:BUILD_BUILDID" -SkipTests
     displayName: Build Native AOT validation package
 
   - publish: artifacts
-    artifact: unsigned-validation-only
-    displayName: Publish nonproduction validation artifact
+    artifact: ado-agent-cluster-key
+    displayName: Publish release artifact

@@ -1,6 +1,6 @@
 # Two-node evaluation guide
 
-Run in a nonproduction two-node cluster with a disposable but genuine Azure DevOps agent registration. Use the same OS patch/signing/network controls intended for production.
+Run in a nonproduction two-node cluster with a disposable but genuine Azure DevOps agent registration. Use the same OS patch, artifact-integrity, ACL, and network controls intended for production.
 
 ## Inputs and evidence directory
 
@@ -45,7 +45,7 @@ The command writes timestamped JSON and Markdown. It never writes protected blob
 
 | # | Test | Expected evidence |
 |---:|---|---|
-| 1 | node preflight | config and nonempty sealed file on both nodes; signed package separately verified |
+| 1 | node preflight | config and nonempty sealed file on both nodes; installed runtime hashes match the separately approved release |
 | 2 | move A to B | move <=300 s; key/service Online; owner full probe succeeds; passive service Stopped; optional pool/canary pass |
 | 3 | move B to A | same evidence in reverse |
 | 4 | terminate service process | WSFC observes termination and returns resource Online; recovery time recorded |
@@ -94,14 +94,14 @@ GO requires:
 - rollback matches the pre-install resource/service/dependency/owner snapshot;
 - artifact, event, console, filesystem, and evidence scans find no plaintext or reusable credential;
 - setup succeeds from deployment authorization, then failover remains functional after that authorization is removed or expired;
-- security owner approves ACLs, signing chain/thumbprint, protector group, escrow, and audit coverage.
+- security owner approves ACLs, artifact distribution/hash evidence, protector group, escrow, and audit coverage.
 
 NO-GO if any gate is unmeasured or fails. An omitted pool/canary scriptblock is recorded as null, not as proof of Azure DevOps availability.
 
 ## Idempotency evaluation
 
 1. Save `Get-ClusterResource`, dependency expressions, parameters, owners, services, file hashes, config hashes, and ACLs.
-2. Run `Install-AdoAgentCluster` with the same ConfigId only in a purpose-built test workflow, or run `Repair-AdoAgentCluster` twice.
+2. Run the packaged `Install-AdoAgentCluster.ps1` with the same ConfigId only in a purpose-built test workflow, or run `Repair-AdoAgentCluster` twice.
 3. Recollect state and compare. Expected differences are only timestamps/log events; no duplicate resource/service/dependency or new escrow is allowed.
 4. Run each mutating command with `-WhatIf` and confirm state hashes do not change.
 
