@@ -16,6 +16,7 @@ internal static class Program
         ("Classic LocalMachine DPAPI round trips", ClassicDpapiRoundTrip),
         ("DPAPI-NG descriptor round trips", DpapiNgRoundTrip),
         ("Additional credential stores fail closed", AdditionalCredentialDetection),
+        ("SDDL comparison tolerates only the Windows auto-inherited marker", SddlComparisonIgnoresOnlyAutoInherited),
         ("Export, seal, activate, and probe preserve one key", EndToEndWorkflow),
         ("Activation rejects an unexpected logical agent", WrongAgentRejected),
         ("Quick probe detects ciphertext mismatch", CiphertextMismatchRejected),
@@ -234,10 +235,22 @@ internal static class Program
         True((attributes & FileAttributes.Hidden) != 0, "hidden attribute");
         const AccessControlSections sections = AccessControlSections.Owner | AccessControlSections.Group | AccessControlSections.Access;
         string activeSddl = new FileInfo(workspace.ActiveKey).GetAccessControl(sections).GetSecurityDescriptorSddlForm(sections);
-        Equal(workspace.TargetSddl, activeSddl, "target SDDL");
+        True(EquivalentPortableFileSecurity(workspace.TargetSddl, activeSddl), "target SDDL semantics");
 
         OperationResult noOp = operations.Activate(workspace.ConfigId, workspace.ConfigRoot);
         Equal(false, noOp.Data["changed"], "idempotent activation");
+    }
+
+    private static void SddlComparisonIgnoresOnlyAutoInherited()
+    {
+        const string captured = "O:SYG:BAD:(A;;FA;;;SY)(A;;FA;;;BA)";
+        const string normalizedByWindows = "O:SYG:BAD:AI(A;;FA;;;SY)(A;;FA;;;BA)";
+        const string changedAccess = "O:SYG:BAD:AI(A;;FA;;;SY)(A;;FR;;;BA)";
+        const string changedProtection = "O:SYG:BAD:PAI(A;;FA;;;SY)(A;;FA;;;BA)";
+
+        True(EquivalentPortableFileSecurity(captured, normalizedByWindows), "auto-inherited control marker");
+        True(!EquivalentPortableFileSecurity(captured, changedAccess), "changed access mask detection");
+        True(!EquivalentPortableFileSecurity(captured, changedProtection), "changed DACL protection detection");
     }
 
     private static void WrongAgentRejected()
@@ -466,6 +479,38 @@ internal static class Program
         {
             throw new InvalidOperationException($"Assertion failed for {label}: expected '{expected}', actual '{actual}'.");
         }
+    }
+
+    private static bool EquivalentPortableFileSecurity(string expectedSddl, string actualSddl)
+    {
+        RawSecurityDescriptor expected = new(expectedSddl);
+        RawSecurityDescriptor actual = new(actualSddl);
+        const ControlFlags windowsNormalization = ControlFlags.DiscretionaryAclAutoInherited;
+
+        return Equals(expected.Owner, actual.Owner)
+            && Equals(expected.Group, actual.Group)
+            && (expected.ControlFlags & ~windowsNormalization) == (actual.ControlFlags & ~windowsNormalization)
+            && EquivalentAcl(expected.DiscretionaryAcl, actual.DiscretionaryAcl)
+            && EquivalentAcl(expected.SystemAcl, actual.SystemAcl);
+    }
+
+    private static bool EquivalentAcl(RawAcl? expected, RawAcl? actual)
+    {
+        if (expected is null || actual is null)
+        {
+            return expected is null && actual is null;
+        }
+
+        if (expected.BinaryLength != actual.BinaryLength)
+        {
+            return false;
+        }
+
+        byte[] expectedBinary = new byte[expected.BinaryLength];
+        byte[] actualBinary = new byte[actual.BinaryLength];
+        expected.GetBinaryForm(expectedBinary, 0);
+        actual.GetBinaryForm(actualBinary, 0);
+        return expectedBinary.AsSpan().SequenceEqual(actualBinary);
     }
 
     private sealed class TestWorkspace : IDisposable
