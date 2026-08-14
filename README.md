@@ -2,7 +2,7 @@
 
 This toolkit creates or adopts one self-hosted Azure DevOps agent and makes it movable between domain-joined Windows Failover Cluster nodes without modifying or forking the Microsoft agent. It keeps one Azure DevOps registration and one RSA private key, but creates a different classic `LocalMachine` DPAPI ciphertext for each possible owner.
 
-The toolkit is implemented and locally validated on Windows. Production use remains gated on the documented two-node WSFC evaluation, production Authenticode signing, and an operator security review.
+The toolkit is implemented and locally validated on Windows. Production use remains gated on the documented two-node WSFC evaluation, controlled artifact distribution, and an operator security review.
 
 ## What it changes
 
@@ -39,7 +39,7 @@ Escrow is not copied to cluster storage and must not be readable by the agent id
 | Service identities | LocalSystem, built-in service identities, gMSA, or an existing domain identity with a runtime-only `PSCredential` |
 | Storage | Shared cluster disk with the same agent-root path on each owner |
 | New-agent registration | Deployment-supplied OAuth token (Services), PAT (Services/Server), or Integrated/Negotiate (Server) |
-| Signing | Production Authenticode signer pinned by SHA-1 certificate thumbprint; explicit persistent lab bypass only |
+| Artifact integrity | Recursive SHA-256 release manifest, companion ZIP checksum, copy-time hash verification, and locked deployment ACLs |
 
 `ConfigId` is a GUID. `expectedAgentId` is deliberately a string because current ADO agent metadata does not define it as a GUID.
 
@@ -55,7 +55,7 @@ Unsupported and fail-closed in v1:
 
 ## Five-minute quick start
 
-For a new registration, use the signed deployment-authenticated setup entry point. The deployment system supplies an already authorized short-lived token by variable name; the script downloads a matching Microsoft agent, registers it stopped, and invokes the cluster installer:
+For a new registration, use the deployment-authenticated setup entry point. The deployment system supplies an already authorized short-lived token by variable name; the script downloads a matching Microsoft agent, registers it stopped, and invokes the cluster installer:
 
 ```powershell
 & '<release-folder>\Initialize-AdoAgentCluster.ps1' `
@@ -71,7 +71,6 @@ For a new registration, use the signed deployment-authenticated setup entry poin
   -Node '<node-a>','<node-b>' `
   -ProtectorGroup '<domain>\<recovery-group>' `
   -EscrowPath '<secure-admin-escrow-folder>' `
-  -PublisherThumbprint '<publisher-thumbprint>' `
   -ServiceAccount '<domain>\<gmsa>$' `
   -ConfigId ([Guid]::NewGuid()) `
   -ConfirmAgentIdle
@@ -79,59 +78,36 @@ For a new registration, use the signed deployment-authenticated setup entry poin
 
 The role remains Offline after setup. Read the complete [new-agent setup guide](docs/agent-setup.md) before use.
 
-The following is the short path for an already registered, idle nonproduction agent. Read [prerequisites](docs/prerequisites.md) and [migration](docs/migration-and-setup.md) before production.
+The following is the short path for an already registered, idle nonproduction agent. Run the packaged installer once on the current shared-disk owner; it discovers and deploys to every possible owner. Read [full cluster installation](docs/cluster-install.md), [prerequisites](docs/prerequisites.md), and [migration](docs/migration-and-setup.md) before production.
 
-1. Build a signed release on a controlled signing host:
-
-   ```powershell
-   .\build\Build.ps1 `
-     -Version '<version>' `
-     -CertificateThumbprint '<publisher-thumbprint>'
-   ```
-
-2. On the current cluster owner, keep the shared disk online, stop the clustered agent service, and import the packaged module:
+1. Build a release in a controlled build environment and retain its reported ZIP SHA-256 in the approved deployment record:
 
    ```powershell
-   Import-Module '<release-folder>\AdoAgentClusterKey.psd1' -Force
+   .\build\Build.ps1 -Version '<version>'
    ```
 
-3. Preflight both possible owners:
-
-   ```powershell
-   Test-AdoAgentClusterPrerequisite `
-     -AgentRoot '<shared-agent-root>' `
-     -ClusterRoleName '<existing-role>' `
-     -SharedDiskResourceName '<shared-disk-resource>' `
-     -ProtectorGroup '<domain\dpapi-ng-group>' `
-     -Node '<node-a>','<node-b>' `
-     -PackagePath '<release-folder>' `
-     -PublisherThumbprint '<publisher-thumbprint>' `
-     -ThrowOnFailure
-   ```
-
-4. Install. The command asks for confirmation and supports `-WhatIf`. If an existing ordinary domain service account must be created on another node, acquire its credential interactively and pass it only in memory:
+2. On the current cluster owner, keep the shared disk online and the agent service idle/offline. Preview and then install. The script discovers all possible owners from the disk resource:
 
    ```powershell
    $configId = [Guid]::NewGuid()
-   $serviceCredential = Get-Credential -UserName '<domain\service-account>'
+   $install = @{
+     AgentRoot = '<shared-agent-root>'
+     ClusterRoleName = '<existing-role>'
+     SharedDiskResourceName = '<shared-disk-resource>'
+     ProtectorGroup = '<domain\dpapi-ng-group>'
+     EscrowPath = '<secure-admin-escrow-folder>'
+     ToolkitPackagePath = '<release-folder>'
+     ConfigId = $configId
+     ConfirmAgentIdle = $true
+   }
 
-   Install-AdoAgentCluster `
-     -AgentRoot '<shared-agent-root>' `
-     -ClusterRoleName '<existing-role>' `
-     -SharedDiskResourceName '<shared-disk-resource>' `
-     -ProtectorGroup '<domain\dpapi-ng-group>' `
-     -EscrowPath '<secure-admin-escrow-folder>' `
-     -PackagePath '<release-folder>' `
-     -Node '<node-a>','<node-b>' `
-     -PublisherThumbprint '<publisher-thumbprint>' `
-     -ConfigId $configId `
-     -ServiceCredential $serviceCredential `
-     -ConfirmAgentIdle
+   & '<release-folder>\Install-AdoAgentCluster.ps1' @install -WhatIf
+   $result = & '<release-folder>\Install-AdoAgentCluster.ps1' @install
    ```
 
-   Omit `-ServiceCredential` for built-in identities and gMSAs. No PAT, password, certificate password, or key bytes belong in command history.
+   Add an in-memory `ServiceCredential` only for an ordinary domain identity. No PAT, password, certificate password, or key bytes belong in command history. The role is left Offline.
 
-5. Bring the role online, move it to each node, and run the evaluation:
+3. Bring the role online, move it to each node, and run the evaluation:
 
    ```powershell
    Invoke-AdoAgentClusterEvaluation `
@@ -145,21 +121,24 @@ The following is the short path for an already registered, idle nonproduction ag
      -IncludeNegativeTests
    ```
 
-Do not use `-LabAllowUnsigned` in production. It writes a durable warning into both `Program Files` and the runtime `ConfigId` directory.
+The toolkit does not require or validate Authenticode signatures. Verify the ZIP SHA-256 against a value obtained through an approved channel before extraction; the internal manifest alone does not establish publisher identity.
 
 ## Repository layout
 
 - `src/AdoAgent.ClusterKey*`: Native AOT helper and security boundary.
 - `cluster/AdoAgentClusterKey.vbs`: static WSFC Generic Script callbacks.
 - `module/AdoAgentClusterKey`: Windows PowerShell 5.1 setup and operations module.
-- `setup/Initialize-AdoAgentCluster.ps1`: signed new-agent bootstrap entry point.
+- `setup/Install-AdoAgentCluster.ps1`: full existing-agent installation entry point for all disk possible owners.
+- `setup/Initialize-AdoAgentCluster.ps1`: new-agent bootstrap entry point.
 - `tests`: native crypto/workflow tests plus PowerShell and VBS contract tests.
-- `build`: deterministic package, SBOM, manifest, signing, and ZIP automation.
+- `build`: deterministic package, SBOM, SHA-256 manifest, checksum, and ZIP automation.
+- `.github/workflows/release.yml`: tag/manual Windows build, verification, workflow artifact retention, and GitHub Release publishing.
 - `docs`: operator, architecture, security, recovery, reference, and evaluation guides.
 
 ## Documentation
 
 - [New-agent quick start](docs/quick-start.md)
+- [Full cluster installation](docs/cluster-install.md)
 - [Architecture and threat model](docs/architecture-and-threat-model.md)
 - [Prerequisites](docs/prerequisites.md)
 - [Initial migration and setup](docs/migration-and-setup.md)

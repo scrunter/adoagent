@@ -19,7 +19,6 @@ param(
     [string]$AgentPackageSha256,
     [string[]]$Node,
     [Guid]$ConfigId = [Guid]::Empty,
-    [string]$PublisherThumbprint,
     [string]$KeyResourceName,
     [string]$ServiceResourceName,
     [Parameter(Mandatory = $true)][string]$ServiceAccount,
@@ -27,8 +26,7 @@ param(
     [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
     [switch]$Resume,
     [switch]$ReplaceExistingAgent,
-    [switch]$AllowInsecureServerUrl,
-    [switch]$LabAllowUnsigned
+    [switch]$AllowInsecureServerUrl
 )
 
 $ErrorActionPreference = 'Stop'

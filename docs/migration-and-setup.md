@@ -11,7 +11,7 @@ This procedure is for an existing registration. To download and register a new s
 3. Capture Azure DevOps pool status, cluster group/resources/dependencies/owners, Windows service configuration, and existing agent diagnostics.
 4. Stop/offline the current clustered agent service and existing selector, if any. Keep its shared disk online on the current owner.
 5. Confirm the current command host is the group's owner. Classic DPAPI export must run on the machine that created the active ciphertext.
-6. Copy the signed release to an administrator-only local path and validate its detached manifest signature and Authenticode signatures.
+6. Verify the release ZIP against its independently recorded approved SHA-256, extract it to an administrator-only local path, and run `Test-Release.ps1`.
 7. Pre-create the escrow directory with the approved external ACL; the installer refuses to create it or place it beneath the agent root.
 
 ## 2. Preflight
@@ -25,8 +25,7 @@ $preflight = Test-AdoAgentClusterPrerequisite `
   -SharedDiskResourceName '<disk-resource>' `
   -ProtectorGroup '<domain\recovery-group>' `
   -Node '<node-a>','<node-b>' `
-  -PackagePath '<release-folder>' `
-  -PublisherThumbprint '<thumbprint>'
+  -PackagePath '<release-folder>'
 
 $preflight.Checks | Format-Table -AutoSize
 if (-not $preflight.Passed) { throw 'Do not continue.' }
@@ -36,9 +35,10 @@ Also run `AdoAgent.ClusterKey.exe inspect`. Archive only its sanitized JSON—no
 
 ## 3. Preview and install
 
-`-WhatIf` performs PowerShell target planning but intentionally does not export/decrypt the key or mutate nodes/cluster state.
+Use the packaged full installer on the current role/disk owner. It discovers every possible owner from the shared-disk resource. `-WhatIf` performs validation and planning but intentionally does not export/decrypt the key or mutate nodes/cluster state.
 
 ```powershell
+$release = '<release-folder>'
 $install = @{
   ConfigId = [Guid]::NewGuid()
   AgentRoot = '<shared-agent-root>'
@@ -46,30 +46,29 @@ $install = @{
   SharedDiskResourceName = '<disk-resource>'
   ProtectorGroup = '<domain\recovery-group>'
   EscrowPath = '<secure-admin-escrow-folder>'
-  PackagePath = '<release-folder>'
-  Node = @('<node-a>','<node-b>')
-  PublisherThumbprint = '<thumbprint>'
+  ToolkitPackagePath = $release
   ConfirmAgentIdle = $true
 }
 
-Install-AdoAgentCluster @install -WhatIf
-Install-AdoAgentCluster @install
+& "$release\Install-AdoAgentCluster.ps1" @install -WhatIf
+$result = & "$release\Install-AdoAgentCluster.ps1" @install
+$result | Format-List
 ```
 
-Keep the generated ConfigId in the change record before execution. A retry with the same ConfigId reuses a matching escrow pair, original rollback snapshot, and matching node artifacts; it fails rather than overwriting a mismatched set.
+Keep the generated ConfigId in the change record before execution. A retry with the same ConfigId reuses a matching escrow pair, original rollback snapshot, and matching node artifacts; it fails rather than overwriting a mismatched set. The result must report every shared-disk possible owner and `RoleState: Offline`.
 
 For an ordinary domain service account, acquire the credential without embedding it:
 
 ```powershell
 $install.ServiceCredential = Get-Credential -UserName '<domain\service-account>'
-Install-AdoAgentCluster @install
+& "$release\Install-AdoAgentCluster.ps1" @install
 $install.Remove('ServiceCredential')
 Remove-Variable serviceCredential -ErrorAction SilentlyContinue
 ```
 
 The installer:
 
-1. validates OS/domain/cluster/remoting, package signatures, protector SID/token, files, role/disk owners, key mode, and additional credential stores;
+1. validates OS/domain/cluster/remoting, required package files, protector SID/token, files, role/disk owners, key mode, and additional credential stores;
 2. captures a nonsecret rollback snapshot;
 3. exports the exact RSA JSON once into SID-protected DPAPI-NG escrow;
 4. installs and revalidates the package on each node;
@@ -80,7 +79,7 @@ The installer:
 9. adds disk-to-selector and selector-to-service dependencies without removing unrelated dependencies;
 10. aligns possible owners with the supplied subset of shared-disk owners.
 
-Record returned `ConfigId`, envelope path, manifest path, resource names, release version, and signer thumbprint in the change record.
+Record returned `ConfigId`, envelope path, manifest path, resource names, release version, and approved ZIP SHA-256 in the change record.
 
 ## 4. Verify installed state
 
@@ -93,6 +92,7 @@ C:\Program Files\AdoAgentClusterKey\
   AdoAgentClusterKey.psm1
   AdoAgentClusterKey.psd1
   AdoAgentClusterKey.Setup.ps1
+  Install-AdoAgentCluster.ps1
   Initialize-AdoAgentCluster.ps1
 
 C:\ProgramData\AdoAgentClusterKey\<ConfigId>\
@@ -123,7 +123,7 @@ Expected: selector depends on the shared disk, service depends on the selector, 
 4. Move the role to the second node and repeat.
 5. Move it back and complete [evaluation](evaluation.md).
 
-Stop and roll back if the selector cannot activate, the service starts without the selector, two pool sessions appear, an unsupported credential store is found, a signature fails, or the five-minute release gate is missed.
+Stop and roll back if the selector cannot activate, the service starts without the selector, two pool sessions appear, an unsupported credential store is found, installed package hashes differ from the approved release, or the five-minute release gate is missed.
 
 Default rollback preserves escrow and node-sealed copies. Follow [recovery and uninstall](recovery-and-uninstall.md).
 

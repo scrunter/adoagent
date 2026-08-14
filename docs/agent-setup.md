@@ -37,7 +37,7 @@ Before setup:
 4. Grant the selected service identity an explicit inheritable Modify ACE on `AgentRoot`, or on its existing parent if the root is absent.
 5. Grant `Log on as a service` on every possible owner. Built-in service identities do not require an explicit assignment; gMSAs and domain users do.
 6. Pre-create the administrator-only escrow directory outside the shared/runtime filesystem.
-7. Verify the signed toolkit release and publisher thumbprint.
+7. Verify the toolkit ZIP SHA-256 against the approved deployment record, then validate its internal release manifest.
 8. Supply an already authorized short-lived registration token from the deployment system.
 
 For a regular domain service identity, pass a `ServiceCredential` acquired in memory. Built-in identities and gMSAs do not accept a password.
@@ -63,7 +63,6 @@ $configId = [Guid]::NewGuid()
   -Node '<node-a>','<node-b>' `
   -ProtectorGroup '<domain>\<dpapi-ng-operator-group>' `
   -EscrowPath '<administrator-only-escrow-folder>' `
-  -PublisherThumbprint '<toolkit-publisher-thumbprint>' `
   -ServiceAccount '<domain>\<gmsa>$' `
   -ConfigId $configId `
   -ConfirmAgentIdle
@@ -90,7 +89,6 @@ Integrated authentication:
   -Node '<node-a>','<node-b>' `
   -ProtectorGroup '<domain>\<dpapi-ng-operator-group>' `
   -EscrowPath '<administrator-only-escrow-folder>' `
-  -PublisherThumbprint '<toolkit-publisher-thumbprint>' `
   -ServiceAccount 'NT AUTHORITY\NETWORK SERVICE' `
   -ConfigId ([Guid]::NewGuid()) `
   -ConfirmAgentIdle
@@ -135,7 +133,7 @@ Phases are:
 Preflight -> PackageStaged -> RegisteredStopped -> KeyValidated -> ClusterInstalled -> Complete
 ```
 
-To resume, repeat the immutable inputs and add `-Resume`. A changed URL, pool, name, root, node set, identity, signing policy, package choice, or ConfigId is rejected. Once `RegisteredStopped` and the Offline check are recorded, a retry does not require the expired registration token.
+To resume, repeat the immutable inputs and add `-Resume`. A changed URL, pool, name, root, node set, identity, package choice, insecure-URL policy, or ConfigId is rejected. Once `RegisteredStopped` and the Offline check are recorded, a retry does not require the expired registration token.
 
 If setup sees an ambiguous mixture of registration files, it stops and preserves them. Do not delete individual dot-files. Follow the recovery procedure below.
 

@@ -76,13 +76,29 @@
       "problemMatcher": []
     },
     {
+      "label": "test: cluster install (Pester)",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "& { $result = Invoke-Pester -Path '${workspaceFolder}\\tests\\PowerShell\\ClusterInstall.Tests.ps1' -PassThru; if ($result.FailedCount -gt 0) { exit 1 } }"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
       "label": "test: local suite",
       "dependsOrder": "sequence",
       "dependsOn": [
         "test: helper",
         "test: scripts (static)",
         "test: module (Pester)",
-        "test: agent setup (Pester)"
+        "test: agent setup (Pester)",
+        "test: cluster install (Pester)",
+        "test: GitHub release workflow"
       ],
       "group": {
         "kind": "test",
@@ -105,7 +121,7 @@
       "problemMatcher": []
     },
     {
-      "label": "package: unsigned lab build",
+      "label": "package: build",
       "type": "process",
       "command": "powershell.exe",
       "args": [
@@ -115,9 +131,22 @@
         "-File",
         "${workspaceFolder}\\build\\Build.ps1",
         "-Version",
-        "0.2.0-dev",
-        "-LabUnsigned"
+        "0.3.0-dev"
       ],
+      "problemMatcher": []
+    },
+    {
+      "label": "test: GitHub release workflow",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "& { $result = Invoke-Pester -Path '${workspaceFolder}\\tests\\PowerShell\\ReleaseWorkflow.Tests.ps1' -PassThru; if ($result.FailedCount -gt 0) { exit 1 } }"
+      ],
+      "group": "test",
       "problemMatcher": []
     }
   ]

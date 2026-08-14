@@ -316,9 +316,7 @@ internal static class Program
             workspace.SealedKey,
             TestWorkspace.AgentId,
             workspace.Fingerprint,
-            workspace.TargetSddl,
-            string.Empty,
-            true);
+            workspace.TargetSddl);
         JsonContracts.WriteRuntimeConfiguration(configuration, workspace.ConfigRoot);
         Throws(ExitCode.PathSecurityFailure, () => operations.Activate(workspace.ConfigId, workspace.ConfigRoot));
     }
@@ -541,9 +539,7 @@ internal static class Program
                 SealedKey,
                 expectedAgentId,
                 Fingerprint,
-                TargetSddl,
-                string.Empty,
-                true);
+                TargetSddl);
             JsonContracts.WriteRuntimeConfiguration(configuration, ConfigRoot);
         }
 

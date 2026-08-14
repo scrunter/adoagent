@@ -20,6 +20,8 @@ Describe 'Deployment-authenticated agent setup contract' {
         ($command.Parameters.Keys -contains 'RegistrationToken') | Should Be $true
         ($command.Parameters.Keys -contains 'RegistrationTokenEnvironmentVariableName') | Should Be $true
         $command.Parameters['RegistrationToken'].ParameterType.FullName | Should Be 'System.Security.SecureString'
+        ($command.Parameters.Keys -contains 'PublisherThumbprint') | Should Be $false
+        ($command.Parameters.Keys -contains 'LabAllowUnsigned') | Should Be $false
     }
 
     It 'uses a nonsecret six-phase resume state machine' {

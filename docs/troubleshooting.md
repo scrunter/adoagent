@@ -34,7 +34,6 @@ For new-agent bootstrap failures, also record the nonsecret setup phase, package
 | 14 | `DpapiNgAuthorizationFailure` | descriptor create/protect/unprotect failed, commonly authorization/domain/envelope issue | verify SID, current token membership, AD/DC access, and envelope hash |
 | 15 | `ActivationFailure` | atomic write/replace/ACL/attribute operation failed | verify disk online, ACL, free space, locks, path controls, and SYSTEM access |
 | 16 | `AdditionalCredentialStore` | authenticated proxy, protected client-cert password, or credential store detected | remove/migrate unsupported protected credential before v1 installation/runtime |
-| 17 | `SignatureFailure` | Windows trust or pinned signer check failed | reinstall verified release, repair thumbprint/trust/revocation; never bypass in production |
 | 18 | `PathSecurityFailure` | target not exact, reparse point, resolved handle mismatch, or sealed key outside ConfigId directory | remove redirection/tamper and restore locked directory topology |
 | 20 | `UnexpectedError` | unclassified internal failure; details deliberately suppressed | correlate OS/cluster events and reproduce in controlled diagnostics; do not enable secret logging |
 
@@ -65,16 +64,17 @@ Compare sanitized `inspect` output with manifest/config. Common causes are agent
 
 `ContainerName` nonempty means the JSON references a Windows key container rather than containing private RSA parameters. `UseCng` identifies the provider family but does not make the key portable. The toolkit never tries to export container material. Follow the named-container migration branch.
 
-## Signature failures
+## Package integrity failures
 
 Check all of:
 
-- file came from the signed ZIP and its SHA-256 matches the signed release manifest;
-- Authenticode status is Valid on every node;
-- current config thumbprint matches the actual release signer after normalization;
-- issuing chain/revocation/timestamp policy succeeds under LocalSystem, not just the operator;
-- no `UNSIGNED-LAB-ONLY.txt` exists in production;
-- endpoint tooling did not rewrite/quarantine the file after signing.
+- the downloaded ZIP SHA-256 matches the value retained in the approved deployment/change record;
+- `Test-Release.ps1` passes after extraction;
+- each installed runtime file matches the corresponding hash in that approved release package;
+- `C:\Program Files\AdoAgentClusterKey` has protected inheritance and grants write access only to SYSTEM and built-in Administrators; and
+- endpoint tooling did not rewrite or quarantine a runtime file after installation.
+
+The toolkit does not validate Authenticode. A matching internal manifest without an independently trusted ZIP hash proves consistency only, not publisher identity.
 
 ## Cluster dependency failures
 

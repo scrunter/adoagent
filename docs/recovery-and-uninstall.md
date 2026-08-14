@@ -34,7 +34,7 @@ Every setup failure defensively stops the locally discovered service and leaves 
 4. Use the exit-code table in [troubleshooting](troubleshooting.md).
 5. If sealed material is missing/corrupt, restore it with `Repair-AdoAgentCluster -Reseal` under a protector-group identity.
 6. If the expected fingerprint/agent ID no longer matches, stop. Determine whether the agent was reconfigured. Do not edit expected values merely to make the probe pass.
-7. If signatures fail, restore a verified signed release and configured publisher thumbprint; do not switch to unsigned mode in production.
+7. If installed package hashes differ, restore the release whose ZIP hash matches the approved deployment record and run repair; investigate the node and distribution path for tampering.
 
 ## Loss of a node-local sealed copy
 
@@ -74,7 +74,7 @@ After rollback:
 1. Compare resources, dependencies, owners, service path/start mode, and file SDDL with the snapshot/change record.
 2. Confirm the toolkit key/service resources are gone when they did not pre-exist.
 3. Decide whether the original nonclustered agent should run. Do not permit both clustered and standalone services.
-4. Retain escrow, manifest, signed release, node ConfigId directories, and rollback evidence until the rollback window closes.
+4. Retain escrow, manifest, approved release/checksum, node ConfigId directories, and rollback evidence until the rollback window closes.
 
 ## Explicit key purge
 
@@ -95,7 +95,7 @@ Uninstall-AdoAgentCluster `
 
 Before approval, verify no recovery/add-node need remains, required retention expired, a replacement registration/key exists if service continues, and backups follow the same deletion policy. File deletion is not a guarantee of forensic erasure on SSD, backup, or replicated storage; use the platform's cryptographic-erasure and media-handling controls.
 
-Package removal from Program Files is deliberately not automatic because another ConfigId may use the same signed binaries. Remove it only after inventory proves no cluster resource/config references it.
+Package removal from Program Files is deliberately not automatic because another ConfigId may use the same binaries. Remove it only after inventory proves no cluster resource/config references it.
 
 ## Remove a registration created by the setup script
 
@@ -105,7 +105,7 @@ Cluster uninstall and Azure DevOps unregistration are intentionally separate:
 2. obtain a fresh approved registration credential from the deployment system;
 3. from the shared AgentRoot, run Microsoft's `config.cmd remove --unattended` using secret environment input, never a literal token argument;
 4. confirm the server-side agent object and every node service entry are gone;
-5. retain setup state, escrow, sealed keys, rollback snapshot, and signed release through the rollback window;
+5. retain setup state, escrow, sealed keys, rollback snapshot, and approved release/checksum through the rollback window;
 6. delete AgentRoot or protected key material only through separately approved purge actions.
 
 If the deployment identity is unavailable, an Azure DevOps administrator can remove the server-side object in the portal, but local files still require controlled cleanup. An agent ID by itself is not an authentication credential.

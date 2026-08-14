@@ -10,7 +10,7 @@ Complete every item before scheduling migration.
 - Failover Clustering tools, including the `FailoverClusters` Windows PowerShell module, are installed on the management/current-owner node.
 - PowerShell remoting works from the current owner to every possible owner and is constrained to cluster administrators.
 - The operator can administer cluster resources, services, local Program Files/ProgramData, and the shared agent root.
-- Endpoint security permits the signed helper and static VBS in `C:\Program Files\AdoAgentClusterKey`.
+- Endpoint security permits the helper and static VBS in `C:\Program Files\AdoAgentClusterKey`.
 
 ## Active Directory
 
@@ -30,7 +30,7 @@ DPAPI-NG SID protection requires domain controllers and AD connectivity when an 
 Choose one preparation path:
 
 - For a new logical agent, satisfy the deployment-authentication and empty-root requirements below, then use [New agent setup](agent-setup.md).
-- For an existing logical agent, it must already be registered and working on the current owner before using [Initial migration and setup](migration-and-setup.md).
+- For an existing logical agent, it must already be registered and working on the current owner before using [Initial migration and setup](migration-and-setup.md) and the packaged [full cluster installer](cluster-install.md).
 
 ### New-agent deployment authorization
 
@@ -80,17 +80,17 @@ Preferred choices are a gMSA or a built-in identity where appropriate. The same 
 - Grant `Log on as a service` and agent-root/work-folder access through managed policy.
 - Do not place passwords in scripts, parameter files, transcripts, shell history, or cluster private properties.
 
-## Signing
+## Artifact integrity
 
-Production requires a trusted Authenticode code-signing certificate supplied outside this repository.
+No code-signing certificate is required. Before copying a release into the maintenance environment:
 
-- The private key should reside in a protected signing service, HSM, or tightly controlled signing host.
-- All nodes must trust the issuing chain and be able to perform the organization's required revocation checks.
-- Record the leaf certificate thumbprint used for pinning.
-- Timestamp release signatures so packages remain valid after normal certificate expiry.
-- Treat `-LabAllowUnsigned` as nonproduction only. It persists warnings by design.
+- obtain the expected release ZIP SHA-256 from an approved deployment/change record or trusted artifact service;
+- verify the downloaded ZIP against that independently obtained value;
+- extract it into an administrator-controlled directory;
+- run `Test-Release.ps1` to validate the recursive `RELEASE-MANIFEST.json`; and
+- retain the source revision, ZIP checksum, internal manifest, SBOM, and verification evidence.
 
-Verify the signed manifest and package before copying it into the maintenance environment; see [build and release](build-and-release.md).
+The internal manifest detects changed package contents but does not authenticate its publisher because it is not signed. Protect the build and artifact-distribution channel accordingly; see [build and release](build-and-release.md).
 
 ## Escrow
 
@@ -102,8 +102,8 @@ Choose a secure administrator-controlled path that is:
 - protected with auditing and retention controls;
 - unavailable to pipeline jobs, the ADO service identity, Cluster service runtime, and ordinary node administration.
 
-Store the `.envelope.bin`, `.manifest.json`, signed release manifest, detached signature, release ZIP, and change record together. Never place a plaintext RSA export there.
+Store the `.envelope.bin`, `.manifest.json`, approved release manifest, release ZIP/checksum, and change record together. Never place a plaintext RSA export there.
 
 ## Maintenance state
 
-No pipeline job may be running. Stop the clustered ADO Generic Service while leaving the shared disk accessible on the current owner. `Install-AdoAgentCluster` requires `-ConfirmAgentIdle` and refuses an Online existing service resource. A job interrupted by cluster movement cannot resume; configure pipeline retry policy separately.
+No pipeline job may be running. Stop the clustered ADO Generic Service while leaving the shared disk accessible on the current owner. `Install-AdoAgentCluster.ps1` requires `-ConfirmAgentIdle`, discovers every shared-disk possible owner, and refuses an Online existing service resource. A job interrupted by cluster movement cannot resume; configure pipeline retry policy separately.

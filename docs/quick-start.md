@@ -2,7 +2,7 @@
 
 This guide creates one new logical Azure DevOps agent on shared Windows Failover Cluster storage, registers it without starting it, enrolls a node-specific DPAPI key on each possible owner, and leaves the clustered role Offline for review.
 
-Use this procedure only when the shared agent root is absent or empty. To adopt an existing registration, follow [Initial migration and setup](migration-and-setup.md).
+Use this procedure only when the shared agent root is absent or empty. To adopt an existing registration, run the packaged [full cluster installation](cluster-install.md) from the current shared-disk owner.
 
 ## Result
 
@@ -28,7 +28,7 @@ Before continuing, confirm that:
 - PowerShell remoting works from the current owner to every possible owner;
 - the shared agent root is absent or empty and has no reparse points;
 - an administrator-only escrow directory exists outside shared cluster storage and the agent-accessible filesystem; and
-- the production-signed toolkit release and its publisher thumbprint are available.
+- the toolkit release ZIP and its approved SHA-256 are available through controlled distribution.
 
 List the current cluster objects:
 
@@ -90,29 +90,35 @@ $escrowPath = '\\secure-files\ado-escrow\cluster-agent-01'
 
 Only recovery administrators should be able to access escrow. The agent service identity and pipeline jobs must not be able to read it.
 
-## 4. Build and verify a production release
+## 4. Build and verify a release
 
-On the controlled signing host:
+In the controlled build environment:
 
 ```powershell
-.\build\Build.ps1 `
-    -Version '0.2.0' `
-    -CertificateThumbprint '<publisher-thumbprint>' `
-    -TimestampServer '<approved-timestamp-server>'
+.\build\Build.ps1 -Version '0.3.0'
 ```
 
-Copy and extract the resulting ZIP onto the current cluster owner, then verify it:
+Record the reported ZIP SHA-256 in the approved deployment/change record. On the current cluster owner, compare the copied ZIP with that independently obtained value before extraction:
 
 ```powershell
-$release = 'C:\Deployment\AdoAgentClusterKey-0.2.0-win-x64'
-$publisher = '<publisher-certificate-thumbprint>'
+$zip = 'C:\Deployment\AdoAgentClusterKey-0.3.0-win-x64.zip'
+$expectedZipSha256 = '<sha256-from-approved-record>'
+
+if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $expectedZipSha256) {
+    throw 'Release ZIP SHA-256 does not match the approved value.'
+}
+```
+
+Extract it, then validate the internal manifest:
+
+```powershell
+$release = 'C:\Deployment\AdoAgentClusterKey-0.3.0-win-x64'
 
 & "$release\Test-Release.ps1" `
-    -PackagePath $release `
-    -PublisherThumbprint $publisher
+    -PackagePath $release
 ```
 
-The repository's `0.2.0-dev` artifact is deliberately lab-unsigned. It may be used only for nonproduction evaluation and requires `-LabAllowUnsigned` on every setup invocation.
+The toolkit does not require or validate Authenticode signatures. The ZIP checksum must come from a protected channel because the internal manifest does not establish publisher identity.
 
 ## 5. Supply deployment authorization
 
@@ -159,7 +165,6 @@ $setupParameters = @{
 
     ProtectorGroup                           = 'CONTOSO\AdoAgentKeyRecoveryOperators'
     EscrowPath                               = '\\secure-files\ado-escrow\cluster-agent-01'
-    PublisherThumbprint                      = '<publisher-certificate-thumbprint>'
 
     ServiceAccount                           = 'CONTOSO\svc-adoagent$'
     ConfigId                                 = $configId
@@ -187,7 +192,7 @@ Always run `-WhatIf` first:
     -WhatIf
 ```
 
-This validates the cluster, service identity, access rights, remoting, signatures, exact-pool permission, agent-name availability, and matching Microsoft agent package. It does not download, extract, register, write setup state, export keys, change services, or create cluster resources.
+This validates the cluster, service identity, access rights, remoting, required toolkit files, exact-pool permission, agent-name availability, and matching Microsoft agent package. It does not download, extract, register, write setup state, export keys, change services, or create cluster resources.
 
 Resolve every reported failure before continuing.
 
@@ -220,7 +225,7 @@ The setup script:
 6. verifies file-backed RSA and rejects unsupported credential stores;
 7. creates the DPAPI-NG escrow envelope;
 8. creates one node-local LocalMachine DPAPI copy on every owner;
-9. installs the signed selector and local runtime configuration;
+9. installs the selector and local runtime configuration;
 10. creates the Generic Script and Generic Service resources and dependencies; and
 11. leaves the entire clustered role Offline.
 
@@ -352,7 +357,6 @@ Repeat the immutable parameters and ConfigId, then add `-Resume`:
 
 If the failure happened before `RegisteredStopped` and the Offline verification, the deployment system must provide a fresh token to the new setup process. After that checkpoint, resume does not require the registration token.
 
-A changed URL, pool, name, root, node set, service identity, signing policy, package choice, or ConfigId is rejected. Use `-ReplaceExistingAgent` only when approved change control has confirmed that an existing Offline server-side registration with the same name is intentionally being replaced.
+A changed URL, pool, name, root, node set, service identity, package choice, insecure-URL policy, or ConfigId is rejected. Use `-ReplaceExistingAgent` only when approved change control has confirmed that an existing Offline server-side registration with the same name is intentionally being replaced.
 
 For ambiguous partial registration, preserve the setup state and `_diag` evidence and follow [Recovery and uninstall](recovery-and-uninstall.md). Never silently remove or re-register the agent.
-

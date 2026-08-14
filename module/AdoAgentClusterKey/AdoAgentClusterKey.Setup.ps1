@@ -628,10 +628,8 @@ function Get-AdoSetupImmutableData {
         toolkitPackagePath = $Bound.ToolkitPackagePath
         agentPackagePath = $Bound.AgentPackagePath
         agentPackageSha256 = $Bound.AgentPackageSha256
-        publisherThumbprint = $Bound.PublisherThumbprint
         serviceAccount = $Bound.ServiceAccount
         allowInsecureServerUrl = [bool]$Bound.AllowInsecureServerUrl
-        labAllowUnsigned = [bool]$Bound.LabAllowUnsigned
     }
 }
 
@@ -732,7 +730,6 @@ function Initialize-AdoAgentCluster {
         [string]$AgentPackageSha256,
         [string[]]$Node,
         [Guid]$ConfigId = [Guid]::Empty,
-        [string]$PublisherThumbprint,
         [string]$KeyResourceName,
         [string]$ServiceResourceName,
         [Parameter(Mandatory = $true)][string]$ServiceAccount,
@@ -740,8 +737,7 @@ function Initialize-AdoAgentCluster {
         [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
         [switch]$Resume,
         [switch]$ReplaceExistingAgent,
-        [switch]$AllowInsecureServerUrl,
-        [switch]$LabAllowUnsigned
+        [switch]$AllowInsecureServerUrl
     )
     Assert-AdoElevated
     Import-Module FailoverClusters -ErrorAction Stop
@@ -773,7 +769,7 @@ function Initialize-AdoAgentCluster {
     Assert-AdoNoReparsePoint -Path $resolvedAgentRoot -AllowMissingLeaf
     Assert-AdoNoReparsePoint -Path $resolvedEscrow
     Assert-AdoNoReparsePoint -Path $resolvedToolkit
-    Assert-AdoSignatures -PackagePath $resolvedToolkit -PublisherThumbprint $PublisherThumbprint -LabAllowUnsigned:$LabAllowUnsigned
+    Test-AdoReleasePackage -PackagePath $resolvedToolkit | Out-Null
     if ([string]::IsNullOrWhiteSpace($AgentPackagePath) -ne [string]::IsNullOrWhiteSpace($AgentPackageSha256)) {
         throw 'AgentPackagePath and AgentPackageSha256 must be supplied together.'
     }
@@ -807,8 +803,7 @@ function Initialize-AdoAgentCluster {
         ProtectorGroup = $ProtectorGroup; EscrowPath = $resolvedEscrow; ToolkitPackagePath = $resolvedToolkit
         AgentPackagePath = if ($AgentPackagePath) { Get-AdoCanonicalPath -Path $AgentPackagePath -MustExist } else { $null }
         AgentPackageSha256 = if ($AgentPackageSha256) { $AgentPackageSha256.ToUpperInvariant() } else { $null }
-        PublisherThumbprint = if ([string]::IsNullOrWhiteSpace($PublisherThumbprint)) { '' } else { ($PublisherThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant() }
-        ServiceAccount = $ServiceAccount; AllowInsecureServerUrl = [bool]$AllowInsecureServerUrl; LabAllowUnsigned = [bool]$LabAllowUnsigned
+        ServiceAccount = $ServiceAccount; AllowInsecureServerUrl = [bool]$AllowInsecureServerUrl
     }
     if ($bound.AgentPackagePath) { Assert-AdoNoReparsePoint -Path $bound.AgentPackagePath }
     $immutable = Get-AdoSetupImmutableData -Bound $bound
@@ -930,8 +925,8 @@ function Initialize-AdoAgentCluster {
             $phaseIndex = Get-AdoSetupPhaseIndex -Phase 'KeyValidated'
         }
         if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled')) {
-            Test-AdoAgentClusterPrerequisite -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -Node $Node -PackagePath $resolvedToolkit -PublisherThumbprint $PublisherThumbprint -ServiceIdentity $ServiceAccount -WorkDirectory $WorkDirectory -LabAllowUnsigned:$LabAllowUnsigned -ThrowOnFailure | Out-Null
-            Install-AdoAgentCluster -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -EscrowPath $resolvedEscrow -PackagePath $resolvedToolkit -ConfirmAgentIdle -Node $Node -ConfigId $ConfigId -PublisherThumbprint $PublisherThumbprint -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -ServiceCredential $ServiceCredential -LabAllowUnsigned:$LabAllowUnsigned -Confirm:$false | Out-Null
+            Test-AdoAgentClusterPrerequisite -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -Node $Node -PackagePath $resolvedToolkit -ServiceIdentity $ServiceAccount -WorkDirectory $WorkDirectory -ThrowOnFailure | Out-Null
+            Install-AdoAgentCluster -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -EscrowPath $resolvedEscrow -PackagePath $resolvedToolkit -ConfirmAgentIdle -Node $Node -ConfigId $ConfigId -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -ServiceCredential $ServiceCredential -Confirm:$false | Out-Null
             Set-AdoSetupPhase -State $state -Phase 'ClusterInstalled' -StatePath $statePath
             $phaseIndex = Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled'
         }

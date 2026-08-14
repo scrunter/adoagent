@@ -1,11 +1,11 @@
 # Day-two operations
 
-All operations use elevated Windows PowerShell 5.1 and the same signed module version installed on the nodes. Preserve `ConfigId`; changing it creates a different artifact set.
+All operations use elevated Windows PowerShell 5.1 and the same approved module version installed on the nodes. Preserve `ConfigId`; changing it creates a different artifact set.
 
 ## Planned failover
 
 1. Stop dispatching new work and wait for the current job to finish.
-2. Confirm the target node is Up and has `config.json`, `sealed.credentials_rsaparams`, package signatures, service entry, and shared-disk ownership eligibility.
+2. Confirm the target node is Up and has `config.json`, `sealed.credentials_rsaparams`, the approved package hashes, service entry, and shared-disk ownership eligibility.
 3. Move the role with Failover Cluster Manager or `Move-ClusterGroup`.
 4. Observe disk Online, selector Online, then Generic Service Online.
 5. Confirm the old owner's SCM service is Stopped, one Azure DevOps session is Online, and a canary job runs on the target.
@@ -29,8 +29,7 @@ Add-AdoAgentClusterNode `
   -ServiceResourceName '<service-resource>' `
   -EnvelopePath '<secure-escrow-envelope>' `
   -ManifestPath '<secure-escrow-manifest>' `
-  -PackagePath '<signed-release-folder>' `
-  -PublisherThumbprint '<thumbprint>' `
+  -PackagePath '<approved-release-folder>' `
   -ServiceCredential $credential `
   -ConfirmAgentIdle
 ```
@@ -66,9 +65,8 @@ Repair-AdoAgentCluster `
   -SharedDiskResourceName '<disk-resource>' `
   -KeyResourceName '<key-resource>' `
   -ServiceResourceName '<service-resource>' `
-  -PackagePath '<signed-release-folder>' `
+  -PackagePath '<approved-release-folder>' `
   -Node '<node-a>','<node-b>' `
-  -PublisherThumbprint '<thumbprint>' `
   -ConfirmAgentIdle
 ```
 
@@ -79,7 +77,7 @@ Use `-Reseal -EnvelopePath ... -ManifestPath ...` only when node ciphertext need
 On an authorized administrative host/current owner:
 
 1. verify envelope SHA-256 against its manifest;
-2. verify release/signatures;
+2. verify the release ZIP against the approved external SHA-256 and run `Test-Release.ps1` against the extracted package;
 3. confirm the operator token contains the manifest protector SID;
 4. run repair with `-Reseal`, or run `seal` directly for controlled diagnostics;
 5. remove all temporary envelope copies and review security/audit events.
@@ -107,18 +105,22 @@ Any operation that causes the Microsoft agent to generate a new `.credentials_rs
 
 The RSA agent registration normally remains unchanged because the private key, not the Windows logon identity, authenticates the agent listener.
 
-## Publisher-certificate rotation
+## Release hash rotation
 
-1. Build and sign a new release with the new certificate.
-2. Ensure every node trusts its chain and revocation behavior.
-3. Drain/offline the service.
-4. Run repair with the new `PublisherThumbprint`; it replaces package and node configs.
-5. Verify no node retains the old thumbprint in `config.json`, then move both directions.
-6. Revoke/retire the old certificate only after rollback retention requirements are resolved.
+Every release produces new package and ZIP hashes.
+
+1. Build the new release in the controlled build pipeline.
+2. Publish the ZIP SHA-256 through the approved artifact/change-control channel.
+3. Verify the downloaded ZIP and extracted release manifest before the maintenance window.
+4. Drain/offline the service and run repair with the new `PackagePath`.
+5. Confirm the installed runtime-file hashes match the new release on every node, then move the role both directions.
+6. Retain the previous release and hash record until rollback requirements are resolved.
 
 ## Toolkit upgrade
 
-Use a signed semantic version, review release notes/security changes, back up current nonsecret config/snapshot, then run repair with the new release. Upgrade every possible owner in one maintenance window so the role cannot move onto a mismatched package. Complete two-node evaluation before returning pool demand.
+Use a unique semantic version, review release notes/security changes, verify the approved ZIP hash and release manifest, back up current nonsecret config/snapshot, then run repair with the new release. Upgrade every possible owner in one maintenance window so the role cannot move onto a mismatched package. Complete two-node evaluation before returning pool demand.
+
+Version `0.3.0` removes the former signing-policy parameters and runtime fields. Existing runtime configuration remains readable; `Repair-AdoAgentCluster` removes obsolete signing fields/markers. Do not resume an in-progress pre-`0.3.0` new-agent setup state with `0.3.0`, because its immutable-input contract differs. Complete or roll back with the original version, then begin a separately approved `0.3.0` setup when necessary.
 
 ## Shared ADO agent upgrade
 

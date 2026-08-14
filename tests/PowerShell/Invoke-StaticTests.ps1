@@ -9,8 +9,9 @@ $manifestPath = Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClu
 $vbsPath = Join-Path $repositoryRoot 'cluster\AdoAgentClusterKey.vbs'
 $setupModulePath = Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.Setup.ps1'
 $setupScriptPath = Join-Path $repositoryRoot 'setup\Initialize-AdoAgentCluster.ps1'
+$installScriptPath = Join-Path $repositoryRoot 'setup\Install-AdoAgentCluster.ps1'
 
-foreach ($path in @($modulePath, $setupModulePath, $setupScriptPath)) {
+foreach ($path in @($modulePath, $setupModulePath, $setupScriptPath, $installScriptPath)) {
     $errors = $null
     [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$errors) | Out-Null
     if (@($errors).Count -ne 0) { throw "PowerShell parse errors in '$path': $($errors.Message -join '; ')" }

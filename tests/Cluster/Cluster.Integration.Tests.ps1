@@ -5,11 +5,14 @@ param(
     [Parameter(Mandatory = $true)][string]$KeyResourceName,
     [Parameter(Mandatory = $true)][string]$ServiceResourceName,
     [Parameter(Mandatory = $true)][string[]]$Node,
-    [Parameter(Mandatory = $true)][string]$PublisherThumbprint
+    [Parameter(Mandatory = $true)][string]$PackagePath
 )
 
 Import-Module FailoverClusters -ErrorAction Stop
-$normalizedThumbprint = ($PublisherThumbprint -replace '[^0-9A-Fa-f]', '').ToUpperInvariant()
+$releaseManifest = Get-Content -LiteralPath (Join-Path $PackagePath 'RELEASE-MANIFEST.json') -Raw | ConvertFrom-Json
+$expectedPackageHashes = @($releaseManifest.files | Where-Object { ([string]$_.path) -notmatch '/' } | ForEach-Object {
+    [pscustomobject]@{ Name = [string]$_.path; Sha256 = [string]$_.sha256 }
+})
 
 Describe 'AdoAgentClusterKey WSFC installation' {
     It 'uses the required resource types and role' {
@@ -48,27 +51,29 @@ Describe 'AdoAgentClusterKey WSFC installation' {
         }
     }
 
-    It 'has a signed package and protected node-local material on every node' {
+    It 'has the expected package bytes and protected node-local material on every node' {
         $results = Invoke-Command -ComputerName $Node -ScriptBlock {
-            param($id, $thumbprint)
+            param($id, $hashes)
             $root = 'C:\Program Files\AdoAgentClusterKey'
             $configRoot = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $id
-            $signaturesValid = $true
-            foreach ($file in Get-ChildItem -LiteralPath $root -File | Where-Object { $_.Extension -in @('.exe','.dll','.ps1','.psm1','.psd1','.vbs') }) {
-                $signature = Get-AuthenticodeSignature -LiteralPath $file.FullName
-                $signaturesValid = $signaturesValid -and $signature.Status -eq 'Valid' -and $signature.SignerCertificate.Thumbprint.ToUpperInvariant() -eq $thumbprint
+            $hashesValid = $true
+            foreach ($expected in $hashes) {
+                $path = Join-Path $root ([string]$expected.Name)
+                $hashesValid = $hashesValid -and
+                    (Test-Path -LiteralPath $path -PathType Leaf) -and
+                    ((Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq [string]$expected.Sha256)
             }
             $acl = Get-Acl -LiteralPath $configRoot
             [pscustomobject]@{
                 Node = $env:COMPUTERNAME
-                SignaturesValid = $signaturesValid
+                HashesValid = $hashesValid
                 ConfigExists = Test-Path -LiteralPath (Join-Path $configRoot 'config.json') -PathType Leaf
                 SealedExists = Test-Path -LiteralPath (Join-Path $configRoot 'sealed.credentials_rsaparams') -PathType Leaf
                 ProtectedInheritance = $acl.AreAccessRulesProtected
             }
-        } -ArgumentList $ConfigId.ToString('D'), $normalizedThumbprint
+        } -ArgumentList $ConfigId.ToString('D'), $expectedPackageHashes
         foreach ($result in $results) {
-            $result.SignaturesValid | Should Be $true
+            $result.HashesValid | Should Be $true
             $result.ConfigExists | Should Be $true
             $result.SealedExists | Should Be $true
             $result.ProtectedInheritance | Should Be $true

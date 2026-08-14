@@ -12,7 +12,6 @@ public enum ExitCode
     DpapiNgAuthorizationFailure = 14,
     ActivationFailure = 15,
     AdditionalCredentialStore = 16,
-    SignatureFailure = 17,
     PathSecurityFailure = 18,
     UnexpectedError = 20,
 }
