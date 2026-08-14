@@ -6,12 +6,22 @@
 - .NET SDK selected by `global.json` (10.0.201 in this repository)
 - Visual C++/Native AOT prerequisites installed with the .NET SDK/build image
 - Windows PowerShell 5.1 for module and VBS tests
+- Pester version selected by `build\Build.Dependencies.psd1` (5.7.1 in this repository)
 
 The projects enable nullable analysis, warnings as errors, current .NET analyzers, deterministic compilation metadata, Native AOT compatibility analysis, and self-contained `win-x64` publishing.
 
 The toolkit does not require or validate Authenticode signatures. Protect the build pipeline, source revision, artifact repository, deployment approvals, and recorded release hash as the software-supply boundary.
 
 ## Local validation
+
+Install the pinned test dependency once for the current user. Windows PowerShell's inbox Pester 3.x module is not compatible with this repository's test suite.
+
+```powershell
+Install-Module Pester -RequiredVersion 5.7.1 `
+  -Scope CurrentUser -Repository PSGallery -Force -SkipPublisherCheck -AllowClobber
+```
+
+The GitHub and Azure Pipelines definitions install this exact version automatically. `Invoke-PesterTests.ps1` refuses to run with a missing or different version and reports the loaded version in the build log.
 
 ```powershell
 dotnet build .\AdoAgentClusterKey.slnx -c Release

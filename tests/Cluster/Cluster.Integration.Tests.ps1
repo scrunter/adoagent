@@ -8,46 +8,48 @@ param(
     [Parameter(Mandatory = $true)][string]$PackagePath
 )
 
-Import-Module FailoverClusters -ErrorAction Stop
-$releaseManifest = Get-Content -LiteralPath (Join-Path $PackagePath 'RELEASE-MANIFEST.json') -Raw | ConvertFrom-Json
-$expectedPackageHashes = @($releaseManifest.files | Where-Object { ([string]$_.path) -notmatch '/' } | ForEach-Object {
-    [pscustomobject]@{ Name = [string]$_.path; Sha256 = [string]$_.sha256 }
-})
+BeforeAll {
+    Import-Module FailoverClusters -ErrorAction Stop
+    $releaseManifest = Get-Content -LiteralPath (Join-Path $PackagePath 'RELEASE-MANIFEST.json') -Raw | ConvertFrom-Json
+    $expectedPackageHashes = @($releaseManifest.files | Where-Object { ([string]$_.path) -notmatch '/' } | ForEach-Object {
+        [pscustomobject]@{ Name = [string]$_.path; Sha256 = [string]$_.sha256 }
+    })
+}
 
 Describe 'AdoAgentClusterKey WSFC installation' {
     It 'uses the required resource types and role' {
         $key = Get-ClusterResource -Name $KeyResourceName
         $service = Get-ClusterResource -Name $ServiceResourceName
-        $key.ResourceType | Should Be 'Generic Script'
-        $service.ResourceType | Should Be 'Generic Service'
-        $key.OwnerGroup.Name | Should Be $ClusterRoleName
-        $service.OwnerGroup.Name | Should Be $ClusterRoleName
+        $key.ResourceType | Should -Be 'Generic Script'
+        $service.ResourceType | Should -Be 'Generic Service'
+        $key.OwnerGroup.Name | Should -Be $ClusterRoleName
+        $service.OwnerGroup.Name | Should -Be $ClusterRoleName
     }
 
     It 'has additive dependency ordering' {
         $keyDependency = [string](Get-ClusterResourceDependency -Resource $KeyResourceName)
         $serviceDependency = [string](Get-ClusterResourceDependency -Resource $ServiceResourceName)
-        $keyDependency | Should Match ([regex]::Escape("[$SharedDiskResourceName]"))
-        $serviceDependency | Should Match ([regex]::Escape("[$KeyResourceName]"))
+        $keyDependency | Should -Match ([regex]::Escape("[$SharedDiskResourceName]"))
+        $serviceDependency | Should -Match ([regex]::Escape("[$KeyResourceName]"))
     }
 
     It 'has required timing properties' {
         $key = Get-ClusterResource -Name $KeyResourceName
-        $key.PendingTimeout | Should Be 60000
-        $key.LooksAlivePollInterval | Should Be 15000
-        $key.IsAlivePollInterval | Should Be 60000
+        $key.PendingTimeout | Should -Be 60000
+        $key.LooksAlivePollInterval | Should -Be 15000
+        $key.IsAlivePollInterval | Should -Be 60000
     }
 
     It 'binds the canonical ConfigId and fixed script path' {
         $key = Get-ClusterResource -Name $KeyResourceName
-        ($key | Get-ClusterParameter -Name ConfigId).Value | Should Be $ConfigId.ToString('D')
-        ($key | Get-ClusterParameter -Name ScriptFilePath).Value | Should Be 'C:\Program Files\AdoAgentClusterKey\AdoAgentClusterKey.vbs'
+        ($key | Get-ClusterParameter -Name ConfigId).Value | Should -Be $ConfigId.ToString('D')
+        ($key | Get-ClusterParameter -Name ScriptFilePath).Value | Should -Be 'C:\Program Files\AdoAgentClusterKey\AdoAgentClusterKey.vbs'
     }
 
     It 'aligns possible owners with the requested nodes' {
         foreach ($resourceName in @($KeyResourceName, $ServiceResourceName)) {
             $owners = @(Get-ClusterResource -Name $resourceName | Get-ClusterOwnerNode | Select-Object -ExpandProperty Name)
-            @($owners | Sort-Object) -join ',' | Should Be (@($Node | Sort-Object) -join ',')
+            @($owners | Sort-Object) -join ',' | Should -Be (@($Node | Sort-Object) -join ',')
         }
     }
 
@@ -73,10 +75,10 @@ Describe 'AdoAgentClusterKey WSFC installation' {
             }
         } -ArgumentList $ConfigId.ToString('D'), $expectedPackageHashes
         foreach ($result in $results) {
-            $result.HashesValid | Should Be $true
-            $result.ConfigExists | Should Be $true
-            $result.SealedExists | Should Be $true
-            $result.ProtectedInheritance | Should Be $true
+            $result.HashesValid | Should -Be $true
+            $result.ConfigExists | Should -Be $true
+            $result.SealedExists | Should -Be $true
+            $result.ProtectedInheritance | Should -Be $true
         }
     }
 
@@ -84,7 +86,7 @@ Describe 'AdoAgentClusterKey WSFC installation' {
         $owner = (Get-ClusterGroup -Name $ClusterRoleName).OwnerNode.Name
         $serviceName = (Get-ClusterResource -Name $ServiceResourceName | Get-ClusterParameter -Name ServiceName).Value
         foreach ($passive in @($Node | Where-Object { $_ -ne $owner })) {
-            (Invoke-Command -ComputerName $passive -ScriptBlock { param($name) (Get-Service -Name $name).Status } -ArgumentList $serviceName) | Should Be 'Stopped'
+            (Invoke-Command -ComputerName $passive -ScriptBlock { param($name) (Get-Service -Name $name).Status } -ArgumentList $serviceName) | Should -Be 'Stopped'
         }
     }
 
@@ -95,6 +97,6 @@ Describe 'AdoAgentClusterKey WSFC installation' {
             & 'C:\Program Files\AdoAgentClusterKey\AdoAgent.ClusterKey.exe' probe --config-id $id --mode full --json | Out-Null
             return $LASTEXITCODE
         } -ArgumentList $ConfigId.ToString('D')
-        $exitCode[-1] | Should Be 0
+        $exitCode[-1] | Should -Be 0
     }
 }

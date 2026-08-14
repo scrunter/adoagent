@@ -76,6 +76,18 @@ jobs:
         with:
           global-json-file: global.json
 
+      - name: Install pinned Pester
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dependencies = Import-PowerShellDataFile -LiteralPath '.\build\Build.Dependencies.psd1'
+          Install-Module -Name Pester -RequiredVersion $dependencies.Pester -Scope CurrentUser -Repository PSGallery -Force -SkipPublisherCheck -AllowClobber
+          Import-Module Pester -RequiredVersion $dependencies.Pester -Force
+          if ((Get-Module Pester).Version -ne [Version]$dependencies.Pester) {
+            throw "Pester $($dependencies.Pester) was not loaded."
+          }
+          Write-Output "Installed Pester $((Get-Module Pester).Version)."
+
       - name: Build and test release package
         env:
           RELEASE_VERSION: ${{ steps.release.outputs.version }}
