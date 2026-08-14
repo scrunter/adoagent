@@ -1,0 +1,124 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "build: debug",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "${workspaceFolder}\\AdoAgentClusterKey.slnx",
+        "--configuration",
+        "Debug"
+      ],
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "test: helper",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "${workspaceFolder}\\tests\\AdoAgent.ClusterKey.Tests\\AdoAgent.ClusterKey.Tests.csproj",
+        "--configuration",
+        "Debug",
+        "--no-build"
+      ],
+      "dependsOn": "build: debug",
+      "group": "test",
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "test: scripts (static)",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tests\\PowerShell\\Invoke-StaticTests.ps1"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "test: module (Pester)",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "& { $result = Invoke-Pester -Path '${workspaceFolder}\\tests\\PowerShell\\Module.Tests.ps1' -PassThru; if ($result.FailedCount -gt 0) { exit 1 } }"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "test: agent setup (Pester)",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "& { $result = Invoke-Pester -Path '${workspaceFolder}\\tests\\PowerShell\\AgentSetup.Tests.ps1' -PassThru; if ($result.FailedCount -gt 0) { exit 1 } }"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "test: local suite",
+      "dependsOrder": "sequence",
+      "dependsOn": [
+        "test: helper",
+        "test: scripts (static)",
+        "test: module (Pester)",
+        "test: agent setup (Pester)"
+      ],
+      "group": {
+        "kind": "test",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "test: all PowerShell (Pester)",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\tests\\PowerShell\\Invoke-PesterTests.ps1"
+      ],
+      "group": "test",
+      "problemMatcher": []
+    },
+    {
+      "label": "package: unsigned lab build",
+      "type": "process",
+      "command": "powershell.exe",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}\\build\\Build.ps1",
+        "-Version",
+        "0.2.0-dev",
+        "-LabUnsigned"
+      ],
+      "problemMatcher": []
+    }
+  ]
+}

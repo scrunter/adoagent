@@ -1,0 +1,177 @@
+# ADO Agent Cluster Key Toolkit
+
+This toolkit creates or adopts one self-hosted Azure DevOps agent and makes it movable between domain-joined Windows Failover Cluster nodes without modifying or forking the Microsoft agent. It keeps one Azure DevOps registration and one RSA private key, but creates a different classic `LocalMachine` DPAPI ciphertext for each possible owner.
+
+The toolkit is implemented and locally validated on Windows. Production use remains gated on the documented two-node WSFC evaluation, production Authenticode signing, and an operator security review.
+
+## What it changes
+
+The agent root remains on cluster storage. Before WSFC starts the clustered ADO service, a Generic Script resource copies the current node's pre-sealed DPAPI blob into the shared `.credentials_rsaparams` file using an atomic, write-through replacement. The agent binary sees the format it already understands.
+
+```mermaid
+flowchart LR
+    E["Administrator escrow<br/>DPAPI-NG, SID protected"] -->|"provisioning only"| A["Node A sealed key<br/>classic LocalMachine DPAPI"]
+    E -->|"provisioning only"| B["Node B sealed key<br/>classic LocalMachine DPAPI"]
+    D["Shared disk"] --> K["Key Selector<br/>Generic Script"]
+    A --> K
+    B --> K
+    K --> F["shared .credentials_rsaparams"]
+    K --> S["ADO Agent<br/>Generic Service"]
+```
+
+Runtime dependency order is:
+
+```text
+Shared disk -> ADO Agent Key Selector -> ADO Agent Generic Service
+```
+
+Escrow is not copied to cluster storage and must not be readable by the agent identity, pipeline jobs, the Cluster service runtime, or ordinary node administrators.
+
+## Support matrix
+
+| Component | Supported in v1 |
+|---|---|
+| Cluster nodes | x64, domain-joined Windows Server 2019, 2022, or 2025 |
+| Helper | .NET 10 LTS, self-contained `win-x64`, Native AOT |
+| PowerShell | Windows PowerShell 5.1 for installation and operation |
+| Agent key | File-backed `.credentials_rsaparams` with complete RSA parameters |
+| Agent ID | Exact scalar value from `.agent`; current agents commonly use a number, stored as a string in toolkit config |
+| Service identities | LocalSystem, built-in service identities, gMSA, or an existing domain identity with a runtime-only `PSCredential` |
+| Storage | Shared cluster disk with the same agent-root path on each owner |
+| New-agent registration | Deployment-supplied OAuth token (Services), PAT (Services/Server), or Integrated/Negotiate (Server) |
+| Signing | Production Authenticode signer pinned by SHA-1 certificate thumbprint; explicit persistent lab bypass only |
+
+`ConfigId` is a GUID. `expectedAgentId` is deliberately a string because current ADO agent metadata does not define it as a GUID.
+
+Unsupported and fail-closed in v1:
+
+- named CSP or CNG key containers;
+- authenticated proxy credentials;
+- password-protected client-certificate credentials or a populated agent credential store;
+- non-domain nodes, ARM64, or Server 2016;
+- multiple simultaneous copies of the logical agent;
+- managed-identity, device-code, Alternate/Basic, or locally acquired service-principal registration;
+- resumption of an in-flight pipeline job after failover.
+
+## Five-minute quick start
+
+For a new registration, use the signed deployment-authenticated setup entry point. The deployment system supplies an already authorized short-lived token by variable name; the script downloads a matching Microsoft agent, registers it stopped, and invokes the cluster installer:
+
+```powershell
+& '<release-folder>\Initialize-AdoAgentCluster.ps1' `
+  -ServerType Services `
+  -AzureDevOpsUrl 'https://dev.azure.com/<organization>' `
+  -RegistrationAuth OAuthToken `
+  -RegistrationTokenEnvironmentVariableName 'SYSTEM_ACCESSTOKEN' `
+  -PoolName '<pool>' `
+  -AgentName '<logical-agent-name>' `
+  -AgentRoot '<shared-disk>:\AdoAgent' `
+  -ClusterRoleName '<existing-role>' `
+  -SharedDiskResourceName '<existing-disk-resource>' `
+  -Node '<node-a>','<node-b>' `
+  -ProtectorGroup '<domain>\<recovery-group>' `
+  -EscrowPath '<secure-admin-escrow-folder>' `
+  -PublisherThumbprint '<publisher-thumbprint>' `
+  -ServiceAccount '<domain>\<gmsa>$' `
+  -ConfigId ([Guid]::NewGuid()) `
+  -ConfirmAgentIdle
+```
+
+The role remains Offline after setup. Read the complete [new-agent setup guide](docs/agent-setup.md) before use.
+
+The following is the short path for an already registered, idle nonproduction agent. Read [prerequisites](docs/prerequisites.md) and [migration](docs/migration-and-setup.md) before production.
+
+1. Build a signed release on a controlled signing host:
+
+   ```powershell
+   .\build\Build.ps1 `
+     -Version '<version>' `
+     -CertificateThumbprint '<publisher-thumbprint>'
+   ```
+
+2. On the current cluster owner, keep the shared disk online, stop the clustered agent service, and import the packaged module:
+
+   ```powershell
+   Import-Module '<release-folder>\AdoAgentClusterKey.psd1' -Force
+   ```
+
+3. Preflight both possible owners:
+
+   ```powershell
+   Test-AdoAgentClusterPrerequisite `
+     -AgentRoot '<shared-agent-root>' `
+     -ClusterRoleName '<existing-role>' `
+     -SharedDiskResourceName '<shared-disk-resource>' `
+     -ProtectorGroup '<domain\dpapi-ng-group>' `
+     -Node '<node-a>','<node-b>' `
+     -PackagePath '<release-folder>' `
+     -PublisherThumbprint '<publisher-thumbprint>' `
+     -ThrowOnFailure
+   ```
+
+4. Install. The command asks for confirmation and supports `-WhatIf`. If an existing ordinary domain service account must be created on another node, acquire its credential interactively and pass it only in memory:
+
+   ```powershell
+   $configId = [Guid]::NewGuid()
+   $serviceCredential = Get-Credential -UserName '<domain\service-account>'
+
+   Install-AdoAgentCluster `
+     -AgentRoot '<shared-agent-root>' `
+     -ClusterRoleName '<existing-role>' `
+     -SharedDiskResourceName '<shared-disk-resource>' `
+     -ProtectorGroup '<domain\dpapi-ng-group>' `
+     -EscrowPath '<secure-admin-escrow-folder>' `
+     -PackagePath '<release-folder>' `
+     -Node '<node-a>','<node-b>' `
+     -PublisherThumbprint '<publisher-thumbprint>' `
+     -ConfigId $configId `
+     -ServiceCredential $serviceCredential `
+     -ConfirmAgentIdle
+   ```
+
+   Omit `-ServiceCredential` for built-in identities and gMSAs. No PAT, password, certificate password, or key bytes belong in command history.
+
+5. Bring the role online, move it to each node, and run the evaluation:
+
+   ```powershell
+   Invoke-AdoAgentClusterEvaluation `
+     -ConfigId '<config-guid>' `
+     -ClusterRoleName '<existing-role>' `
+     -KeyResourceName '<existing-role> - Key Selector' `
+     -ServiceResourceName '<existing-role> - ADO Agent' `
+     -Node '<node-a>','<node-b>' `
+     -OutputPath '<evidence-folder>' `
+     -IncludeServiceRecoveryTest `
+     -IncludeNegativeTests
+   ```
+
+Do not use `-LabAllowUnsigned` in production. It writes a durable warning into both `Program Files` and the runtime `ConfigId` directory.
+
+## Repository layout
+
+- `src/AdoAgent.ClusterKey*`: Native AOT helper and security boundary.
+- `cluster/AdoAgentClusterKey.vbs`: static WSFC Generic Script callbacks.
+- `module/AdoAgentClusterKey`: Windows PowerShell 5.1 setup and operations module.
+- `setup/Initialize-AdoAgentCluster.ps1`: signed new-agent bootstrap entry point.
+- `tests`: native crypto/workflow tests plus PowerShell and VBS contract tests.
+- `build`: deterministic package, SBOM, manifest, signing, and ZIP automation.
+- `docs`: operator, architecture, security, recovery, reference, and evaluation guides.
+
+## Documentation
+
+- [New-agent quick start](docs/quick-start.md)
+- [Architecture and threat model](docs/architecture-and-threat-model.md)
+- [Prerequisites](docs/prerequisites.md)
+- [Initial migration and setup](docs/migration-and-setup.md)
+- [New agent setup](docs/agent-setup.md)
+- [Day-two operations](docs/operations.md)
+- [Recovery and uninstall](docs/recovery-and-uninstall.md)
+- [Security guide](docs/security.md)
+- [Troubleshooting](docs/troubleshooting.md)
+- [CLI, schema, and WSFC reference](docs/reference.md)
+- [Evaluation guide](docs/evaluation.md)
+- [Build, test, and release](docs/build-and-release.md)
+
+## Design sources
+
+The current ADO agent Windows key manager uses classic machine-scope DPAPI and also retains optional named-container modes: [Microsoft agent source](https://github.com/microsoft/azure-pipelines-agent/blob/15ee11cd728d630f9c9905485449e3359da0a493/src/Agent.Listener/Configuration.Windows/RSAEncryptedFileKeyManager.cs). The escrow implementation uses native [CNG DPAPI protection APIs](https://learn.microsoft.com/en-us/windows/win32/seccng/cng-dpapi) and SID protection descriptors. WSFC callbacks follow the [Generic Script entry-point contract](https://learn.microsoft.com/en-us/previous-versions/windows/desktop/mscs/scripting-entry-points) and do not call the Cluster API from a resource callback. .NET 10 is supported on the target server releases; see [.NET 10 supported operating systems](https://github.com/dotnet/core/blob/main/release-notes/10.0/supported-os.md) and the [.NET support policy](https://dotnet.microsoft.com/en-us/platform/support/policy).

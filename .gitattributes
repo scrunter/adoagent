@@ -1,0 +1,8 @@
+* text=auto eol=crlf
+
+*.pfx binary
+*.p12 binary
+*.cer binary
+*.zip binary
+*.envelope.bin binary
+*.p7s binary

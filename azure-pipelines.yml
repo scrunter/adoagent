@@ -1,0 +1,40 @@
+trigger:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: windows-2025
+
+steps:
+  - checkout: self
+    clean: true
+
+  - task: UseDotNet@2
+    displayName: Use .NET 10 SDK
+    inputs:
+      packageType: sdk
+      version: 10.0.x
+
+  - powershell: |
+      dotnet build AdoAgentClusterKey.slnx -c Release
+      if ($LASTEXITCODE -ne 0) { throw 'Build failed.' }
+      dotnet run --project tests\AdoAgent.ClusterKey.Tests\AdoAgent.ClusterKey.Tests.csproj -c Release --no-build
+      if ($LASTEXITCODE -ne 0) { throw 'Helper tests failed.' }
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\PowerShell\Invoke-StaticTests.ps1
+      if ($LASTEXITCODE -ne 0) { throw 'Script tests failed.' }
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\PowerShell\Invoke-PesterTests.ps1
+      if ($LASTEXITCODE -ne 0) { throw 'PowerShell Pester tests failed.' }
+      dotnet publish src\AdoAgent.ClusterKey\AdoAgent.ClusterKey.csproj -c Release -r win-x64 --self-contained true -p:PublishAot=true -p:DebugType=None -o artifacts\ci-publish
+      if ($LASTEXITCODE -ne 0) { throw 'Native AOT publish failed.' }
+      powershell.exe -NoProfile -ExecutionPolicy Bypass -File tests\PowerShell\Invoke-CliOutputTests.ps1 -Executable artifacts\ci-publish\AdoAgent.ClusterKey.exe
+      if ($LASTEXITCODE -ne 0) { throw 'CLI output tests failed.' }
+    displayName: Build and test
+
+  - powershell: |
+      .\build\Build.ps1 -Version "0.2.$env:BUILD_BUILDID" -LabUnsigned -SkipTests
+    displayName: Build Native AOT validation package
+
+  - publish: artifacts
+    artifact: unsigned-validation-only
+    displayName: Publish nonproduction validation artifact

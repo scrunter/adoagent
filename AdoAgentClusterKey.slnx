@@ -1,0 +1,9 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/AdoAgent.ClusterKey.Core/AdoAgent.ClusterKey.Core.csproj" />
+    <Project Path="src/AdoAgent.ClusterKey/AdoAgent.ClusterKey.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/AdoAgent.ClusterKey.Tests/AdoAgent.ClusterKey.Tests.csproj" />
+  </Folder>
+</Solution>

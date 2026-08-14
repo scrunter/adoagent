@@ -1,0 +1,14 @@
+**/bin/
+**/obj/
+.vs/
+artifacts/
+TestResults/
+*.user
+*.suo
+*.pfx
+*.p12
+*.cer
+*.envelope.bin
+*.p7s
+evaluation-*.json
+evaluation-*.md
