@@ -55,8 +55,10 @@
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
-        "-Command",
-        "& { $result = Invoke-Pester -Path '${workspaceFolder}\\tests\\PowerShell\\Module.Tests.ps1' -PassThru; if ($result.FailedCount -gt 0) { exit 1 } }"
+        "-File",
+        "${workspaceFolder}\\tests\\PowerShell\\Invoke-PesterTests.ps1",
+        "-Path",
+        "${workspaceFolder}\\tests\\PowerShell\\Module.Tests.ps1"
       ],
       "group": "test",
       "problemMatcher": []
@@ -69,8 +71,10 @@
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
-        "-Command",
-        "& { $result = Invoke-Pester -Path '${workspaceFolder}\\tests\\PowerShell\\AgentSetup.Tests.ps1' -PassThru; if ($result.FailedCount -gt 0) { exit 1 } }"
+        "-File",
+        "${workspaceFolder}\\tests\\PowerShell\\Invoke-PesterTests.ps1",
+        "-Path",
+        "${workspaceFolder}\\tests\\PowerShell\\AgentSetup.Tests.ps1"
       ],
       "group": "test",
       "problemMatcher": []
@@ -83,8 +87,10 @@
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
-        "-Command",
-        "& { $result = Invoke-Pester -Path '${workspaceFolder}\\tests\\PowerShell\\ClusterInstall.Tests.ps1' -PassThru; if ($result.FailedCount -gt 0) { exit 1 } }"
+        "-File",
+        "${workspaceFolder}\\tests\\PowerShell\\Invoke-PesterTests.ps1",
+        "-Path",
+        "${workspaceFolder}\\tests\\PowerShell\\ClusterInstall.Tests.ps1"
       ],
       "group": "test",
       "problemMatcher": []
@@ -143,8 +149,10 @@
         "-NoProfile",
         "-ExecutionPolicy",
         "Bypass",
-        "-Command",
-        "& { $result = Invoke-Pester -Path '${workspaceFolder}\\tests\\PowerShell\\ReleaseWorkflow.Tests.ps1' -PassThru; if ($result.FailedCount -gt 0) { exit 1 } }"
+        "-File",
+        "${workspaceFolder}\\tests\\PowerShell\\Invoke-PesterTests.ps1",
+        "-Path",
+        "${workspaceFolder}\\tests\\PowerShell\\ReleaseWorkflow.Tests.ps1"
       ],
       "group": "test",
       "problemMatcher": []
