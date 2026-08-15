@@ -20,6 +20,7 @@ internal static class Program
         ("SDDL comparison tolerates only the Windows auto-inherited marker", SddlComparisonIgnoresOnlyAutoInherited),
         ("Export, seal, activate, and probe preserve one key", EndToEndWorkflow),
         ("Staged node sealing installs the validated ciphertext", StagedSealInstallation),
+        ("Delegated sealing validates the protector SID in the impersonated token", DelegatedSealTokenValidation),
         ("Activation rejects an unexpected logical agent", WrongAgentRejected),
         ("Quick probe detects ciphertext mismatch", CiphertextMismatchRejected),
         ("Tampered escrow envelope is rejected", TamperedEnvelopeRejected),
@@ -283,6 +284,28 @@ internal static class Program
             CryptographicOperations.ZeroMemory(stagedBytes);
             CryptographicOperations.ZeroMemory(installedBytes);
         }
+    }
+
+    private static void DelegatedSealTokenValidation()
+    {
+        FakeDataProtector protector = new();
+        using TestWorkspace workspace = new(protector);
+        KeyOperations operations = new(protector, enforceSealedKeyAcl: false);
+        using WindowsIdentity identity = WindowsIdentity.GetCurrent(
+            TokenAccessLevels.Query | TokenAccessLevels.Duplicate | TokenAccessLevels.Impersonate);
+        string currentSid = identity.User?.Value
+            ?? throw new InvalidOperationException("Current identity has no SID.");
+        string delegatedOutput = Path.Combine(workspace.Root, "delegated.sealed.credentials_rsaparams");
+
+        _ = operations.Export(workspace.AgentRoot, currentSid, workspace.Envelope, workspace.Manifest, overwrite: false);
+        _ = operations.Seal(workspace.Envelope, workspace.Manifest, workspace.ConfigId, delegatedOutput, overwrite: false, identity.AccessToken);
+        True(File.Exists(delegatedOutput), "delegated output created");
+
+        EscrowManifest manifest = JsonContracts.ReadManifest(workspace.Manifest);
+        JsonContracts.WriteManifest(workspace.Manifest, manifest with { ProtectorSid = "S-1-5-18" }, overwrite: true);
+        string rejectedOutput = Path.Combine(workspace.Root, "rejected.sealed.credentials_rsaparams");
+        Throws(ExitCode.DpapiNgAuthorizationFailure, () =>
+            operations.Seal(workspace.Envelope, workspace.Manifest, workspace.ConfigId, rejectedOutput, overwrite: false, identity.AccessToken));
     }
 
     private static void SddlComparisonIgnoresOnlyAutoInherited()

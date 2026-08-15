@@ -55,7 +55,7 @@ Authentication rules:
 - `Negotiate`: Server only; requires `RegistrationCredential`.
 - `AllowInsecureServerUrl`: Server only and explicit; HTTPS remains the default.
 - regular domain `ServiceAccount`: requires matching `ServiceCredential`; built-in identities and gMSAs are passwordless.
-- `ProvisioningCredential`: required when an unsealed passive node needs DPAPI-NG unwrap. It must be a protector-group operator credential, is passed through encrypted PowerShell remoting, launches only the fixed helper with nonsecret arguments, and is not persisted.
+- `ProvisioningCredential`: required when an unsealed passive node needs DPAPI-NG unwrap. It must use `DOMAIN\user` or `user@domain` format, identify a protector-group operator allowed to log on locally to each node, and is passed through encrypted PowerShell remoting. The password crosses only an anonymous stdin pipe to the fixed helper, is used for `LogonUser`, and is not persisted.
 
 The script consumes an environment variable by name, not by value. `-WhatIf` retains the source variable because it creates no child process. OAuth/PAT and passwords are placed only in the `config.cmd` child environment. The process arguments contain only nonsecret switches, including `--preventServiceStart` and optional explicit `--replace`.
 
@@ -133,7 +133,7 @@ C:\ProgramData\AdoAgentClusterKey\<ConfigId>\sealed.credentials_rsaparams
 
 The output path is fixed; the release CLI does not accept an override.
 
-`seal-staging` and `install-sealed` are internal setup variants used for passive nodes. The first runs under the supplied provisioning identity and writes only a verified, node-bound classic-DPAPI ciphertext into a unique temporary directory. The second runs under the elevated installer identity, decrypts and fingerprints that ciphertext again, then atomically installs it at the fixed ProgramData path with the runtime ACL. They do not accept credentials or plaintext on the command line.
+`seal-delegated` and `install-sealed` are internal setup variants used for passive nodes. The first runs under the elevated installer identity, reads a provisioning credential only from its anonymous stdin pipe, impersonates its `LogonUser` token for the DPAPI-NG unwrap, and writes only a verified node-bound classic-DPAPI ciphertext into a unique temporary directory after reverting. The second decrypts and fingerprints that ciphertext again, then atomically installs it at the fixed ProgramData path with the runtime ACL. Neither accepts credentials or plaintext on the command line. `seal-staging` remains an internal nondelegated test/setup primitive.
 
 ### `activate`
 

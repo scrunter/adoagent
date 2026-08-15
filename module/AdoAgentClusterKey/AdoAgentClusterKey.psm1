@@ -451,51 +451,85 @@ function Set-AdoNodeKeyMaterial {
             if ($null -eq $credential) {
                 throw "ProvisioningCredential is required to seal the DPAPI-NG envelope on remote node '$env:COMPUTERNAME' without enabling credential delegation."
             }
-            try {
-                $account = New-Object Security.Principal.NTAccount($credential.UserName)
-                $credentialSid = $account.Translate([Security.Principal.SecurityIdentifier]).Value
-            }
-            catch { throw "ProvisioningCredential identity '$($credential.UserName)' cannot be resolved on '$env:COMPUTERNAME'." }
-
-            $aclIdentity = '*' + $credentialSid
-            $grantedPaths = @()
-            $launchError = $null
-            $cleanupFailures = @()
+            $process = $null
+            $standardInput = $null
+            $passwordPointer = [IntPtr]::Zero
             try {
                 if (((Get-Item -LiteralPath $temporaryPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
                     throw "The temporary sealing directory is a reparse point on '$env:COMPUTERNAME'."
                 }
-                foreach ($path in @($temporaryPath)) {
-                    $grant = $aclIdentity + ':(OI)(CI)M'
-                    & icacls.exe $path '/grant' $grant | Out-Null
-                    if ($LASTEXITCODE -ne 0) { throw "Unable to grant temporary sealing access on '$env:COMPUTERNAME'." }
-                    $grantedPaths += $path
-                }
-
-                $standardOutput = Join-Path $temporaryPath 'seal.stdout.txt'
-                $standardError = Join-Path $temporaryPath 'seal.stderr.txt'
                 $stagedSealedPath = Join-Path $temporaryPath 'staged.sealed.credentials_rsaparams'
-                $argumentString = 'seal-staging --envelope "{0}" --manifest "{1}" --config-id {2} --output "{3}" --force --json' -f
+                $argumentString = 'seal-delegated --envelope "{0}" --manifest "{1}" --config-id {2} --output "{3}" --force --json' -f
                     (Join-Path $temporaryPath 'escrow.bin'), (Join-Path $temporaryPath 'manifest.json'), $configId, $stagedSealedPath
-                $process = Start-Process -FilePath $helperPath -ArgumentList $argumentString -Credential $credential -LoadUserProfile -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $helperPath) -Wait -PassThru -RedirectStandardOutput $standardOutput -RedirectStandardError $standardError
-                $outputText = @(
-                    if (Test-Path -LiteralPath $standardOutput) { Get-Content -LiteralPath $standardOutput -Raw }
-                    if (Test-Path -LiteralPath $standardError) { Get-Content -LiteralPath $standardError -Raw }
-                ) -join [Environment]::NewLine
+
+                $startInfo = New-Object Diagnostics.ProcessStartInfo
+                $startInfo.FileName = $helperPath
+                $startInfo.Arguments = $argumentString
+                $startInfo.WorkingDirectory = $temporaryPath
+                $startInfo.UseShellExecute = $false
+                $startInfo.CreateNoWindow = $true
+                $startInfo.RedirectStandardInput = $true
+                $startInfo.RedirectStandardOutput = $true
+                $startInfo.RedirectStandardError = $true
+                $process = New-Object Diagnostics.Process
+                $process.StartInfo = $startInfo
+                if (-not $process.Start()) { throw 'Windows did not start the delegated sealing helper.' }
+                $standardOutputTask = $process.StandardOutput.ReadToEndAsync()
+                $standardErrorTask = $process.StandardError.ReadToEndAsync()
+                $standardInput = $process.StandardInput.BaseStream
+
+                [byte[]]$protocolMagic = @(65, 67, 75, 49)
+                $standardInput.Write($protocolMagic, 0, $protocolMagic.Length)
+                [Array]::Clear($protocolMagic, 0, $protocolMagic.Length)
+
+                $userNameBytes = [Text.Encoding]::UTF8.GetBytes($credential.UserName)
+                try {
+                    $lengthBytes = [BitConverter]::GetBytes([int]$userNameBytes.Length)
+                    $standardInput.Write($lengthBytes, 0, $lengthBytes.Length)
+                    $standardInput.Write($userNameBytes, 0, $userNameBytes.Length)
+                    [Array]::Clear($lengthBytes, 0, $lengthBytes.Length)
+                }
+                finally { [Array]::Clear($userNameBytes, 0, $userNameBytes.Length) }
+
+                $passwordCharacterCount = [int]$credential.Password.Length
+                $passwordByteCount = [int]($passwordCharacterCount * 2)
+                $lengthBytes = [BitConverter]::GetBytes($passwordByteCount)
+                $standardInput.Write($lengthBytes, 0, $lengthBytes.Length)
+                [Array]::Clear($lengthBytes, 0, $lengthBytes.Length)
+                $passwordPointer = [Runtime.InteropServices.Marshal]::SecureStringToGlobalAllocUnicode($credential.Password)
+                [byte[]]$passwordCodeUnit = @(0, 0)
+                try {
+                    for ($index = 0; $index -lt $passwordCharacterCount; $index++) {
+                        $value = [int][Runtime.InteropServices.Marshal]::ReadInt16($passwordPointer, $index * 2)
+                        $passwordCodeUnit[0] = [byte]($value -band 255)
+                        $passwordCodeUnit[1] = [byte](($value -shr 8) -band 255)
+                        $standardInput.Write($passwordCodeUnit, 0, 2)
+                    }
+                    $standardInput.Flush()
+                }
+                finally { [Array]::Clear($passwordCodeUnit, 0, $passwordCodeUnit.Length) }
+                $standardInput.Close()
+                $standardInput = $null
+                $process.WaitForExit()
+                $outputText = @($standardOutputTask.Result, $standardErrorTask.Result) -join [Environment]::NewLine
                 if ($process.ExitCode -ne 0) {
                     throw "Node sealing failed on '$env:COMPUTERNAME' with sanitized helper response: $($outputText.Trim())"
                 }
             }
-            catch { $launchError = $_ }
+            catch {
+                throw "Delegated node sealing failed on '$env:COMPUTERNAME'. $($_.Exception.Message)"
+            }
             finally {
-                foreach ($path in $grantedPaths) {
-                    & icacls.exe $path '/remove:g' $aclIdentity | Out-Null
-                    if ($LASTEXITCODE -ne 0) { $cleanupFailures += $path }
+                if ($passwordPointer -ne [IntPtr]::Zero) {
+                    [Runtime.InteropServices.Marshal]::ZeroFreeGlobalAllocUnicode($passwordPointer)
+                }
+                if ($null -ne $standardInput) { try { $standardInput.Dispose() } catch { } }
+                if ($null -ne $process) {
+                    try { if (-not $process.HasExited) { $process.Kill() } } catch { }
+                    $process.Dispose()
                 }
                 $credential = $null
             }
-            if ($null -ne $launchError) { throw $launchError }
-            if ($cleanupFailures.Count -gt 0) { throw "Unable to remove temporary provisioning access on '$env:COMPUTERNAME'." }
             $installArguments = @('install-sealed', '--sealed', $stagedSealedPath, '--manifest', (Join-Path $temporaryPath 'manifest.json'), '--config-id', $configId, '--force', '--json')
             $installOutput = & $helperPath @installArguments 2>&1
             if ($LASTEXITCODE -ne 0) { throw "Unable to install the staged sealed key on '$env:COMPUTERNAME' with sanitized helper response: $(($installOutput | Out-String).Trim())" }
