@@ -15,6 +15,7 @@ For new-agent bootstrap failures, also record the nonsecret `phase`, `lastFailur
 | existing agent name | confirm the old registration is stopped; use `-ReplaceExistingAgent` only under explicit change control |
 | partial registration | preserve dot-files and `_diag`; reconcile the local/server registration manually before a new ConfigId |
 | service identity prerequisite | ensure SID resolves on every node, `SeServiceLogonRight` exists, and AgentRoot has an explicit inheritable Modify ACE |
+| unable to disable independent service recovery | keep the registered service stopped and resume with a corrected toolkit release; the recovery-action call must pass an explicit quoted empty `actions=` value to `sc.exe` under Windows PowerShell 5.1 |
 | agent not Offline | `--preventServiceStart` guarantee could not be verified; stop services, check for another listener with the same name, and do not cluster it |
 | resume input mismatch | one or more immutable values differ from setup state; use the original values or start a separately approved new setup |
 

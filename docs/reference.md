@@ -94,7 +94,7 @@ Path: `<EscrowPath>\<ConfigId>.setup.json`
 }
 ```
 
-The immutable object also records the offline package choice and insecure-URL switch. It contains no token, password, RSA data, protected blob, or envelope content. Valid phases are `Preflight`, `PackageStaged`, `RegisteredStopped`, `KeyValidated`, `ClusterInstalled`, and `Complete`. On failure, `lastFailureOperation` records the sanitized operation identifier also shown in the terminating error, such as `ExtractAgentPackage` or `InstallClusterResources`.
+The immutable object also records the offline Microsoft agent-package choice and insecure-URL switch. It contains no token, password, RSA data, protected blob, or envelope content. Valid phases are `Preflight`, `PackageStaged`, `RegisteredStopped`, `KeyValidated`, `ClusterInstalled`, and `Complete`. On `-Resume`, `toolkitPackagePath` alone may be rebound to another release after its manifest passes integrity validation and the operator confirms the operation; all other immutable values must match. On failure, `lastFailureOperation` records the sanitized operation identifier also shown in the terminating error, such as `ExtractAgentPackage` or `InstallClusterResources`.
 
 ## Helper CLI
 

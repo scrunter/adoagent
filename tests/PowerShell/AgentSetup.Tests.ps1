@@ -34,6 +34,33 @@ Describe 'Deployment-authenticated agent setup contract' {
         $source | Should -Not -Match 'servicePassword\s*='
     }
 
+    It 'allows only a verified toolkit path to change during resume' {
+        InModuleScope AdoAgentClusterKey {
+            $saved = [ordered]@{
+                schemaVersion = 1
+                configId = '11111111-2222-3333-4444-555555555555'
+                agentRoot = 'K:\adoagent'
+                node = @('node-a', 'node-b')
+                toolkitPackagePath = 'C:\Toolkit\0.4.6'
+                serviceAccount = 'NT AUTHORITY\NETWORK SERVICE'
+            }
+            $requested = [ordered]@{
+                schemaVersion = 1
+                configId = '11111111-2222-3333-4444-555555555555'
+                agentRoot = 'K:\adoagent'
+                node = @('node-a', 'node-b')
+                toolkitPackagePath = 'C:\Toolkit\0.4.7'
+                serviceAccount = 'NT AUTHORITY\NETWORK SERVICE'
+            }
+            (Test-AdoSetupToolkitPathOnlyChange -SavedImmutable $saved -RequestedImmutable $requested) | Should -Be $true
+            $requested.agentRoot = 'K:\different-agent'
+            (Test-AdoSetupToolkitPathOnlyChange -SavedImmutable $saved -RequestedImmutable $requested) | Should -Be $false
+        }
+
+        $source = Get-Content -LiteralPath $setupModulePath -Raw
+        $source.IndexOf('if ($rebindToolkitPackage)') | Should -BeGreaterThan $source.IndexOf('if (-not $PSCmdlet.ShouldProcess')
+    }
+
     It 'uses child environment variables and never puts credentials in config.cmd arguments' {
         $source = Get-Content -LiteralPath $setupModulePath -Raw
         $source | Should -Match 'VSTS_AGENT_INPUT_TOKEN'
