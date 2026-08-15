@@ -547,7 +547,10 @@ function Set-AdoNodeKeyMaterial {
             configId = $configId
             resourceName = $resourceName
             agentRoot = $agentRoot
-            activeKeyPath = (Join-Path $agentRoot '.credentials_rsaparams')
+            # The shared cluster disk is not mounted on a passive node. Build the
+            # Windows path lexically instead of asking the PowerShell drive provider
+            # to resolve it while node-local configuration is being installed.
+            activeKeyPath = [IO.Path]::Combine($agentRoot, '.credentials_rsaparams')
             sealedKeyPath = $sealedPath
             expectedAgentId = [string]$inspectionData.agentId
             expectedPublicKeySha256 = [string]$inspectionData.publicKeySha256

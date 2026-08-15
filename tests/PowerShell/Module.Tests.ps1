@@ -122,6 +122,22 @@ Describe 'AdoAgentClusterKey module contract' {
         }
     }
 
+    It 'constructs the passive-node active key path without resolving its shared drive' {
+        $usedDriveNames = @(Get-PSDrive -PSProvider FileSystem | ForEach-Object { $_.Name.ToUpperInvariant() })
+        $missingDriveName = @(90..68 | ForEach-Object { ([char]$_).ToString() } | Where-Object { $usedDriveNames -notcontains $_ })[0]
+        $missingAgentRoot = $missingDriveName + ':\adoagent'
+
+        { Join-Path $missingAgentRoot '.credentials_rsaparams' -ErrorAction Stop } | Should -Throw
+        [IO.Path]::Combine($missingAgentRoot, '.credentials_rsaparams') | Should -Be ($missingAgentRoot + '\.credentials_rsaparams')
+
+        $source = Get-Content -LiteralPath $modulePath -Raw
+        $start = $source.IndexOf('function Set-AdoNodeKeyMaterial')
+        $end = $source.IndexOf('function Remove-AdoLegacySigningStateOnNode')
+        $nodeConfigurationSource = $source.Substring($start, $end - $start)
+        $nodeConfigurationSource | Should -Match '\[IO\.Path\]::Combine\(\$agentRoot,\s*''\.credentials_rsaparams''\)'
+        $nodeConfigurationSource | Should -Not -Match 'Join-Path\s+\$agentRoot'
+    }
+
     It 'uses the exact unsigned byte types required by Win32_Service.Create' {
         $createMethod = (Get-CimClass -ClassName Win32_Service).CimClassMethods['Create']
         $createMethod.Parameters['ServiceType'].CimType | Should -Be 'UInt8'
