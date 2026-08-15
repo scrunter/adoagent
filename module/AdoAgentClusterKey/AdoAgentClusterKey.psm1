@@ -374,6 +374,30 @@ function Set-AdoNodeService {
     } -ArgumentList $Definition, $ServiceCredential
 }
 
+function Test-AdoNodeIsLocal {
+    param([Parameter(Mandatory = $true)][string]$Node)
+    $shortName = $Node.Trim().TrimEnd('.').Split('.')[0]
+    return $shortName.Equals($env:COMPUTERNAME, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-AdoNodeKeyMaterialPresent {
+    param(
+        [Parameter(Mandatory = $true)][string]$Node,
+        [Parameter(Mandatory = $true)][Guid]$ConfigId
+    )
+    $check = {
+        param($id)
+        $directory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $id
+        $config = Join-Path $directory 'config.json'
+        $sealed = Join-Path $directory 'sealed.credentials_rsaparams'
+        return (Test-Path -LiteralPath $config -PathType Leaf) -and
+            (Test-Path -LiteralPath $sealed -PathType Leaf) -and
+            (Get-Item -LiteralPath $sealed).Length -gt 0
+    }
+    if (Test-AdoNodeIsLocal -Node $Node) { return [bool](& $check $ConfigId.ToString('D')) }
+    return [bool](Invoke-Command -ComputerName $Node -ScriptBlock $check -ArgumentList $ConfigId.ToString('D'))
+}
+
 function Set-AdoNodeKeyMaterial {
     param(
         [Parameter(Mandatory = $true)][string]$Node,
@@ -384,68 +408,144 @@ function Set-AdoNodeKeyMaterial {
         [Parameter(Mandatory = $true)][string]$ResourceName,
         [Parameter(Mandatory = $true)][string]$AgentRoot,
         [Parameter(Mandatory = $true)][string]$RollbackJson,
+        [System.Management.Automation.PSCredential]$ProvisioningCredential,
         [switch]$PreserveExisting
     )
     $session = $null
     $temporary = $null
-    $session = New-PSSession -ComputerName $Node
-    try {
-        $temporary = Invoke-Command -Session $session -ScriptBlock {
-            $path = Join-Path $env:TEMP ('AdoAgentClusterKey-Escrow-' + [Guid]::NewGuid().ToString('N'))
-            New-Item -ItemType Directory -Path $path -Force | Out-Null
-            return $path
-        }
-        Copy-Item -LiteralPath $EnvelopePath -Destination (Join-Path $temporary 'escrow.bin') -ToSession $session
-        Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $temporary 'manifest.json') -ToSession $session
-        Invoke-Command -Session $session -ScriptBlock {
-            param($configId, $temporaryPath, $resourceName, $agentRoot, $inspectionData, $rollback, $preserveExisting)
-            $configDirectory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $configId
-            New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
-            $sealedPath = Join-Path $configDirectory 'sealed.credentials_rsaparams'
-            $configPath = Join-Path $configDirectory 'config.json'
-            if ($preserveExisting -and (Test-Path -LiteralPath $sealedPath -PathType Leaf) -and (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-                $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-                $same = [string]$existing.configId -eq $configId -and
-                    [string]$existing.resourceName -eq $resourceName -and
-                    [string]$existing.agentRoot -eq $agentRoot -and
-                    [string]$existing.expectedAgentId -eq [string]$inspectionData.agentId -and
-                    [string]$existing.expectedPublicKeySha256 -eq [string]$inspectionData.publicKeySha256
-                if (-not $same) { throw 'Existing ConfigId artifacts do not match the requested installation.' }
-                $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
-                $existing.PSObject.Properties.Remove('publisherThumbprint')
-                $existing.PSObject.Properties.Remove('allowUnsigned')
-                [IO.File]::WriteAllText($configPath, ($existing | ConvertTo-Json -Depth 5), $utf8WithoutBom)
-                $rollbackPath = Join-Path $configDirectory 'rollback.json'
-                if (-not (Test-Path -LiteralPath $rollbackPath -PathType Leaf)) { [IO.File]::WriteAllText($rollbackPath, $rollback, $utf8WithoutBom) }
-                & icacls.exe $configDirectory '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
-                if ($LASTEXITCODE -ne 0) { throw 'Unable to protect the existing ConfigId directory ACL.' }
-                $warningPath = Join-Path $configDirectory 'UNSIGNED-LAB-ONLY.txt'
-                if (Test-Path -LiteralPath $warningPath) { Remove-Item -LiteralPath $warningPath -Force }
-                return
-            }
-            $arguments = @('seal', '--envelope', (Join-Path $temporaryPath 'escrow.bin'), '--manifest', (Join-Path $temporaryPath 'manifest.json'), '--config-id', $configId, '--force', '--json')
-            $output = & 'C:\Program Files\AdoAgentClusterKey\AdoAgent.ClusterKey.exe' @arguments 2>&1
-            if ($LASTEXITCODE -ne 0) { throw "Node sealing failed with sanitized helper response: $(($output | Out-String).Trim())" }
-            $configuration = [ordered]@{
-                schemaVersion = 1
-                configId = $configId
-                resourceName = $resourceName
-                agentRoot = $agentRoot
-                activeKeyPath = (Join-Path $agentRoot '.credentials_rsaparams')
-                sealedKeyPath = $sealedPath
-                expectedAgentId = [string]$inspectionData.agentId
-                expectedPublicKeySha256 = [string]$inspectionData.publicKeySha256
-                targetFileSddl = [string]$inspectionData.targetFileSddl
-            }
+    $localExecution = Test-AdoNodeIsLocal -Node $Node
+    $configureNode = {
+        param($configId, $temporaryPath, $resourceName, $agentRoot, $inspectionData, $rollback, $preserveExisting, $isLocalExecution, $credential)
+        $configDirectory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $configId
+        New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
+        $sealedPath = Join-Path $configDirectory 'sealed.credentials_rsaparams'
+        $configPath = Join-Path $configDirectory 'config.json'
+        if ($preserveExisting -and (Test-Path -LiteralPath $sealedPath -PathType Leaf) -and (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+            $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+            $same = [string]$existing.configId -eq $configId -and
+                [string]$existing.resourceName -eq $resourceName -and
+                [string]$existing.agentRoot -eq $agentRoot -and
+                [string]$existing.expectedAgentId -eq [string]$inspectionData.agentId -and
+                [string]$existing.expectedPublicKeySha256 -eq [string]$inspectionData.publicKeySha256
+            if (-not $same) { throw "Existing ConfigId artifacts do not match the requested installation on '$env:COMPUTERNAME'." }
             $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
-            [IO.File]::WriteAllText($configPath, ($configuration | ConvertTo-Json -Depth 5), $utf8WithoutBom)
-            [IO.File]::WriteAllText((Join-Path $configDirectory 'rollback.json'), $rollback, $utf8WithoutBom)
+            $existing.PSObject.Properties.Remove('publisherThumbprint')
+            $existing.PSObject.Properties.Remove('allowUnsigned')
+            [IO.File]::WriteAllText($configPath, ($existing | ConvertTo-Json -Depth 5), $utf8WithoutBom)
+            $rollbackPath = Join-Path $configDirectory 'rollback.json'
+            if (-not (Test-Path -LiteralPath $rollbackPath -PathType Leaf)) { [IO.File]::WriteAllText($rollbackPath, $rollback, $utf8WithoutBom) }
             & icacls.exe $configDirectory '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw 'Unable to protect the ConfigId directory ACL.' }
-        } -ArgumentList $ConfigId.ToString('D'), $temporary, $ResourceName, $AgentRoot, $Inspection.data, $RollbackJson, ([bool]$PreserveExisting)
+            if ($LASTEXITCODE -ne 0) { throw "Unable to protect the existing ConfigId directory ACL on '$env:COMPUTERNAME'." }
+            $warningPath = Join-Path $configDirectory 'UNSIGNED-LAB-ONLY.txt'
+            if (Test-Path -LiteralPath $warningPath) { Remove-Item -LiteralPath $warningPath -Force }
+            return
+        }
+
+        $arguments = @('seal', '--envelope', (Join-Path $temporaryPath 'escrow.bin'), '--manifest', (Join-Path $temporaryPath 'manifest.json'), '--config-id', $configId, '--force', '--json')
+        $helperPath = 'C:\Program Files\AdoAgentClusterKey\AdoAgent.ClusterKey.exe'
+        if ($isLocalExecution) {
+            $output = & $helperPath @arguments 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Local node sealing failed on '$env:COMPUTERNAME' with sanitized helper response: $(($output | Out-String).Trim())" }
+        }
+        else {
+            if ($null -eq $credential) {
+                throw "ProvisioningCredential is required to seal the DPAPI-NG envelope on remote node '$env:COMPUTERNAME' without enabling credential delegation."
+            }
+            try {
+                $account = New-Object Security.Principal.NTAccount($credential.UserName)
+                $credentialSid = $account.Translate([Security.Principal.SecurityIdentifier]).Value
+            }
+            catch { throw "ProvisioningCredential identity '$($credential.UserName)' cannot be resolved on '$env:COMPUTERNAME'." }
+
+            $aclIdentity = '*' + $credentialSid
+            $grantedPaths = @()
+            $launchError = $null
+            $cleanupFailures = @()
+            try {
+                if (((Get-Item -LiteralPath $temporaryPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                    throw "The temporary sealing directory is a reparse point on '$env:COMPUTERNAME'."
+                }
+                foreach ($path in @($temporaryPath)) {
+                    $grant = $aclIdentity + ':(OI)(CI)M'
+                    & icacls.exe $path '/grant' $grant | Out-Null
+                    if ($LASTEXITCODE -ne 0) { throw "Unable to grant temporary sealing access on '$env:COMPUTERNAME'." }
+                    $grantedPaths += $path
+                }
+
+                $standardOutput = Join-Path $temporaryPath 'seal.stdout.txt'
+                $standardError = Join-Path $temporaryPath 'seal.stderr.txt'
+                $stagedSealedPath = Join-Path $temporaryPath 'staged.sealed.credentials_rsaparams'
+                $argumentString = 'seal-staging --envelope "{0}" --manifest "{1}" --config-id {2} --output "{3}" --force --json' -f
+                    (Join-Path $temporaryPath 'escrow.bin'), (Join-Path $temporaryPath 'manifest.json'), $configId, $stagedSealedPath
+                $process = Start-Process -FilePath $helperPath -ArgumentList $argumentString -Credential $credential -LoadUserProfile -WindowStyle Hidden -WorkingDirectory (Split-Path -Parent $helperPath) -Wait -PassThru -RedirectStandardOutput $standardOutput -RedirectStandardError $standardError
+                $outputText = @(
+                    if (Test-Path -LiteralPath $standardOutput) { Get-Content -LiteralPath $standardOutput -Raw }
+                    if (Test-Path -LiteralPath $standardError) { Get-Content -LiteralPath $standardError -Raw }
+                ) -join [Environment]::NewLine
+                if ($process.ExitCode -ne 0) {
+                    throw "Node sealing failed on '$env:COMPUTERNAME' with sanitized helper response: $($outputText.Trim())"
+                }
+            }
+            catch { $launchError = $_ }
+            finally {
+                foreach ($path in $grantedPaths) {
+                    & icacls.exe $path '/remove:g' $aclIdentity | Out-Null
+                    if ($LASTEXITCODE -ne 0) { $cleanupFailures += $path }
+                }
+                $credential = $null
+            }
+            if ($null -ne $launchError) { throw $launchError }
+            if ($cleanupFailures.Count -gt 0) { throw "Unable to remove temporary provisioning access on '$env:COMPUTERNAME'." }
+            $installArguments = @('install-sealed', '--sealed', $stagedSealedPath, '--manifest', (Join-Path $temporaryPath 'manifest.json'), '--config-id', $configId, '--force', '--json')
+            $installOutput = & $helperPath @installArguments 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Unable to install the staged sealed key on '$env:COMPUTERNAME' with sanitized helper response: $(($installOutput | Out-String).Trim())" }
+        }
+        if (-not (Test-Path -LiteralPath $sealedPath -PathType Leaf) -or (Get-Item -LiteralPath $sealedPath).Length -eq 0) {
+            throw "Node sealing did not create a nonempty sealed key on '$env:COMPUTERNAME'."
+        }
+
+        $configuration = [ordered]@{
+            schemaVersion = 1
+            configId = $configId
+            resourceName = $resourceName
+            agentRoot = $agentRoot
+            activeKeyPath = (Join-Path $agentRoot '.credentials_rsaparams')
+            sealedKeyPath = $sealedPath
+            expectedAgentId = [string]$inspectionData.agentId
+            expectedPublicKeySha256 = [string]$inspectionData.publicKeySha256
+            targetFileSddl = [string]$inspectionData.targetFileSddl
+        }
+        $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText($configPath, ($configuration | ConvertTo-Json -Depth 5), $utf8WithoutBom)
+        [IO.File]::WriteAllText((Join-Path $configDirectory 'rollback.json'), $rollback, $utf8WithoutBom)
+        & icacls.exe $configDirectory '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Unable to protect the ConfigId directory ACL on '$env:COMPUTERNAME'." }
+    }
+    try {
+        if ($localExecution) {
+            $temporary = Join-Path $env:TEMP ('AdoAgentClusterKey-Escrow-' + [Guid]::NewGuid().ToString('N'))
+            New-Item -ItemType Directory -Path $temporary -Force | Out-Null
+            Copy-Item -LiteralPath $EnvelopePath -Destination (Join-Path $temporary 'escrow.bin')
+            Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $temporary 'manifest.json')
+            & $configureNode $ConfigId.ToString('D') $temporary $ResourceName $AgentRoot $Inspection.data $RollbackJson ([bool]$PreserveExisting) $true $null
+        }
+        else {
+            $session = New-PSSession -ComputerName $Node
+            $temporary = Invoke-Command -Session $session -ScriptBlock {
+                $path = Join-Path $env:TEMP ('AdoAgentClusterKey-Escrow-' + [Guid]::NewGuid().ToString('N'))
+                New-Item -ItemType Directory -Path $path -Force | Out-Null
+                return $path
+            }
+            Copy-Item -LiteralPath $EnvelopePath -Destination (Join-Path $temporary 'escrow.bin') -ToSession $session
+            Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $temporary 'manifest.json') -ToSession $session
+            Invoke-Command -Session $session -ScriptBlock $configureNode -ArgumentList $ConfigId.ToString('D'), $temporary, $ResourceName, $AgentRoot, $Inspection.data, $RollbackJson, ([bool]$PreserveExisting), $false, $ProvisioningCredential
+        }
     }
     finally {
-        if ($null -ne $session) {
+        if ($localExecution) {
+            if ($temporary -and (Test-Path -LiteralPath $temporary)) { Remove-Item -LiteralPath $temporary -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+        elseif ($null -ne $session) {
             if ($temporary) { Invoke-Command -Session $session -ScriptBlock { param($path) if (Test-Path -LiteralPath $path) { Remove-Item -LiteralPath $path -Recurse -Force } } -ArgumentList $temporary -ErrorAction SilentlyContinue }
             Remove-PSSession -Session $session
         }
@@ -632,7 +732,8 @@ function Install-AdoAgentCluster {
         [Guid]$ConfigId = [Guid]::Empty,
         [string]$KeyResourceName,
         [string]$ServiceResourceName,
-        [System.Management.Automation.PSCredential]$ServiceCredential
+        [System.Management.Automation.PSCredential]$ServiceCredential,
+        [System.Management.Automation.PSCredential]$ProvisioningCredential
     )
     Assert-AdoElevated
     Import-Module FailoverClusters -ErrorAction Stop
@@ -681,6 +782,12 @@ function Install-AdoAgentCluster {
             throw 'Existing escrow manifest does not match the inspected agent key or protector SID.'
         }
     }
+    $remoteNodesNeedingSeal = @($Node | Where-Object {
+        -not (Test-AdoNodeIsLocal -Node $_) -and -not (Test-AdoNodeKeyMaterialPresent -Node $_ -ConfigId $ConfigId)
+    })
+    if ($remoteNodesNeedingSeal.Count -gt 0 -and $null -eq $ProvisioningCredential) {
+        throw "ProvisioningCredential is required for DPAPI-NG sealing on remote nodes: $($remoteNodesNeedingSeal -join ', '). Supply an in-memory credential for an account authorized by ProtectorGroup."
+    }
     if (-not $PSCmdlet.ShouldProcess($ClusterRoleName, "install clustered ADO key selector ConfigId $ConfigId on $($Node -join ', ')")) { return }
     if ($writeRollbackSnapshot) { [IO.File]::WriteAllText($rollbackFile, $rollbackJson, (New-Object Text.UTF8Encoding($false))) }
     if (-not $escrowExists) {
@@ -689,7 +796,7 @@ function Install-AdoAgentCluster {
     foreach ($clusterNode in $Node) {
         Install-AdoPackageOnNode -Node $clusterNode -PackagePath $PackagePath
         Set-AdoNodeService -Node $clusterNode -Definition $service -ServiceCredential $ServiceCredential
-        Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $envelope -ManifestPath $manifest -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson -PreserveExisting
+        Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $envelope -ManifestPath $manifest -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson -ProvisioningCredential $ProvisioningCredential -PreserveExisting
     }
     $resources = Set-AdoClusterResources -RoleName $ClusterRoleName -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -SharedDiskResourceName $SharedDiskResourceName -ServiceName $service.Name -ConfigId $ConfigId -Node $Node
     [pscustomobject]@{ ConfigId = $ConfigId; EnvelopePath = $envelope; ManifestPath = $manifest; Nodes = $Node; KeyResource = $resources.Key.Name; ServiceResource = $resources.Service.Name }
@@ -709,7 +816,8 @@ function Add-AdoAgentClusterNode {
         [Parameter(Mandatory = $true)][string]$ManifestPath,
         [Parameter(Mandatory = $true)][string]$PackagePath,
         [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
-        [System.Management.Automation.PSCredential]$ServiceCredential
+        [System.Management.Automation.PSCredential]$ServiceCredential,
+        [System.Management.Automation.PSCredential]$ProvisioningCredential
     )
     Assert-AdoElevated
     Import-Module FailoverClusters -ErrorAction Stop
@@ -723,10 +831,13 @@ function Add-AdoAgentClusterNode {
     $service = Get-AdoAgentServiceDefinition -AgentRoot $AgentRoot
     $rollbackPath = Join-Path (Join-Path $script:ConfigRoot $ConfigId.ToString('D')) 'rollback.json'
     $rollbackJson = Get-Content -LiteralPath $rollbackPath -Raw
+    if (-not (Test-AdoNodeIsLocal -Node $Node) -and -not (Test-AdoNodeKeyMaterialPresent -Node $Node -ConfigId $ConfigId) -and $null -eq $ProvisioningCredential) {
+        throw "ProvisioningCredential is required for DPAPI-NG sealing on remote node '$Node'."
+    }
     if (-not $PSCmdlet.ShouldProcess($Node, "enroll as a possible owner for ConfigId $ConfigId")) { return }
     Install-AdoPackageOnNode -Node $Node -PackagePath $PackagePath
     Set-AdoNodeService -Node $Node -Definition $service -ServiceCredential $ServiceCredential
-    Set-AdoNodeKeyMaterial -Node $Node -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson -PreserveExisting
+    Set-AdoNodeKeyMaterial -Node $Node -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson -ProvisioningCredential $ProvisioningCredential -PreserveExisting
     $owners = @((Get-AdoPossibleOwners -Resource (Get-ClusterResource -Name $KeyResourceName)) + $Node | Select-Object -Unique)
     Set-AdoClusterResources -RoleName $ClusterRoleName -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -SharedDiskResourceName $SharedDiskResourceName -ServiceName $service.Name -ConfigId $ConfigId -Node $owners | Out-Null
 }
@@ -746,7 +857,8 @@ function Repair-AdoAgentCluster {
         [string]$EnvelopePath,
         [string]$ManifestPath,
         [switch]$Reseal,
-        [System.Management.Automation.PSCredential]$ServiceCredential
+        [System.Management.Automation.PSCredential]$ServiceCredential,
+        [System.Management.Automation.PSCredential]$ProvisioningCredential
     )
     Assert-AdoElevated
     Import-Module FailoverClusters -ErrorAction Stop
@@ -759,12 +871,16 @@ function Repair-AdoAgentCluster {
     $service = Get-AdoAgentServiceDefinition -AgentRoot $AgentRoot
     $rollbackJson = Get-Content -LiteralPath (Join-Path (Join-Path $script:ConfigRoot $ConfigId.ToString('D')) 'rollback.json') -Raw
     if ($Reseal -and (-not $EnvelopePath -or -not $ManifestPath)) { throw '-EnvelopePath and -ManifestPath are required with -Reseal.' }
+    $remoteResealNodes = @($Node | Where-Object { -not (Test-AdoNodeIsLocal -Node $_) })
+    if ($Reseal -and $remoteResealNodes.Count -gt 0 -and $null -eq $ProvisioningCredential) {
+        throw "ProvisioningCredential is required to reseal remote nodes: $($remoteResealNodes -join ', ')."
+    }
     if (-not $PSCmdlet.ShouldProcess($ClusterRoleName, "repair ConfigId $ConfigId on $($Node -join ', ')")) { return }
     foreach ($clusterNode in $Node) {
         Install-AdoPackageOnNode -Node $clusterNode -PackagePath $PackagePath
         Set-AdoNodeService -Node $clusterNode -Definition $service -ServiceCredential $ServiceCredential
         if ($Reseal) {
-            Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson
+            Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson -ProvisioningCredential $ProvisioningCredential
         }
         Remove-AdoLegacySigningStateOnNode -Node $clusterNode -ConfigId $ConfigId
         $nodeReady = Invoke-Command -ComputerName $clusterNode -ScriptBlock {

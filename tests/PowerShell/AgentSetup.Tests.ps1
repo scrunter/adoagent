@@ -21,7 +21,9 @@ Describe 'Deployment-authenticated agent setup contract' {
         ($command.Parameters.Keys -contains 'WhatIf') | Should -Be $true
         ($command.Parameters.Keys -contains 'RegistrationToken') | Should -Be $true
         ($command.Parameters.Keys -contains 'RegistrationTokenEnvironmentVariableName') | Should -Be $true
+        ($command.Parameters.Keys -contains 'ProvisioningCredential') | Should -Be $true
         $command.Parameters['RegistrationToken'].ParameterType.FullName | Should -Be 'System.Security.SecureString'
+        $command.Parameters['ProvisioningCredential'].ParameterType.FullName | Should -Be 'System.Management.Automation.PSCredential'
         ($command.Parameters.Keys -contains 'PublisherThumbprint') | Should -Be $false
         ($command.Parameters.Keys -contains 'LabAllowUnsigned') | Should -Be $false
     }
@@ -32,6 +34,7 @@ Describe 'Deployment-authenticated agent setup contract' {
         $source | Should -Match '\.setup\.json'
         $source | Should -Not -Match 'registrationToken\s*='
         $source | Should -Not -Match 'servicePassword\s*='
+        $source | Should -Not -Match 'provisioningCredential\s*='
     }
 
     It 'allows a verified toolkit path and only a pre-escrow protector correction during resume' {

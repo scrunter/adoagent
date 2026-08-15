@@ -10,6 +10,7 @@ param(
     [string]$KeyResourceName,
     [string]$ServiceResourceName,
     [System.Management.Automation.PSCredential]$ServiceCredential,
+    [System.Management.Automation.PSCredential]$ProvisioningCredential,
     [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle
 )
 
@@ -105,6 +106,7 @@ $installParameters = @{
     WhatIf = [bool]$WhatIfPreference
 }
 if ($null -ne $ServiceCredential) { $installParameters.ServiceCredential = $ServiceCredential }
+if ($null -ne $ProvisioningCredential) { $installParameters.ProvisioningCredential = $ProvisioningCredential }
 if ($PSBoundParameters.ContainsKey('Confirm')) { $installParameters.Confirm = [bool]$PSBoundParameters['Confirm'] }
 
 $installer = Get-Command -Name 'Install-AdoAgentCluster' -Module 'AdoAgentClusterKey' -ErrorAction Stop

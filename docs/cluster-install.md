@@ -80,6 +80,7 @@ Generate one ConfigId and keep it in the change record:
 ```powershell
 $release = 'C:\Deployment\AdoAgentClusterKey-0.3.0-win-x64'
 $configId = [Guid]::NewGuid()
+$provisioningCredential = Get-Credential -UserName 'CONTOSO\AdoAgentKeyOperator'
 
 $install = @{
     AgentRoot = 'S:\AdoAgent'
@@ -90,6 +91,7 @@ $install = @{
     ToolkitPackagePath = $release
     ConfigId = $configId
     ConfirmAgentIdle = $true
+    ProvisioningCredential = $provisioningCredential
 }
 
 & "$release\Install-AdoAgentCluster.ps1" `
@@ -142,12 +144,12 @@ In order, the script and module:
 6. create or reuse a matching SID-protected DPAPI-NG escrow envelope and manifest;
 7. copy the release to each node, verify source-to-node SHA-256 values, and lock the Program Files ACL;
 8. create or repair an identical Manual-start Windows service on every node and disable independent SCM recovery;
-9. unwrap escrow in memory on each node and create that node's classic `LocalMachine` DPAPI blob;
+9. unwrap escrow in memory locally on the current owner and under the fresh provisioning logon on passive nodes, then create each node's classic `LocalMachine` DPAPI blob;
 10. write and protect `config.json`, the sealed key, and rollback snapshot under the ConfigId directory;
 11. create or repair the Generic Script and Generic Service resources, additive dependencies, timing values, separate Resource Monitor, and possible owners; and
 12. stop the complete clustered role and return `RoleState: Offline`.
 
-No plaintext RSA key is written to disk. The escrow envelope is copied only to a unique node temporary directory during sealing and is removed in `finally`.
+No plaintext RSA key is written to disk. The escrow envelope is copied only to a unique node temporary directory during sealing and is removed in `finally`. Ordinary WinRM cannot perform DPAPI-NG's domain-controller second hop, so passive sealing requires `ProvisioningCredential`; its SID receives temporary access only to the sealing/config directories and that access is removed before completion.
 
 ## Review before first start
 

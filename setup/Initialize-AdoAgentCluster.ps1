@@ -23,6 +23,7 @@ param(
     [string]$ServiceResourceName,
     [Parameter(Mandatory = $true)][string]$ServiceAccount,
     [System.Management.Automation.PSCredential]$ServiceCredential,
+    [System.Management.Automation.PSCredential]$ProvisioningCredential,
     [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
     [switch]$Resume,
     [switch]$ReplaceExistingAgent,

@@ -68,6 +68,8 @@ The new-agent setup treats deployment authorization as an external prerequisite.
 
 After registration, the deployment credential is no longer used. The agent's `.credentials` metadata and RSA private key establish its runtime identity. Expiry or removal of the deployment token must not affect failover.
 
+Passive-node sealing requires a fresh authenticated domain logon because ordinary WinRM does not delegate credentials for DPAPI-NG's domain-controller access. Supply `ProvisioningCredential` only from an attended trusted administration session. The toolkit transfers the `PSCredential` through encrypted remoting, grants its SID temporary access only to the unique sealing directory, launches the fixed helper with no secret arguments, removes that access in `finally`, and retains no credential in setup state or files. The credentialed process writes only machine-DPAPI ciphertext to staging; the elevated remoting process validates and atomically installs that ciphertext under the locked runtime ACL. The toolkit deliberately does not enable CredSSP. Every target node must therefore already be inside the trusted cluster-administration boundary.
+
 ## Escrow handling
 
 - Store it outside cluster/runtime paths in encrypted, backed-up administrative storage.

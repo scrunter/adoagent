@@ -40,7 +40,7 @@ Before setup:
 7. Verify the toolkit ZIP SHA-256 against the approved deployment record, then validate its internal release manifest.
 8. Supply an already authorized short-lived registration token from the deployment system.
 
-For a regular domain service identity, pass a `ServiceCredential` acquired in memory. Built-in identities and gMSAs do not accept a password.
+Acquire `ProvisioningCredential` in memory for an account in the DPAPI-NG protector group. It is used only to run the helper under a fresh authenticated domain logon on passive nodes, avoiding the WinRM second-hop failure without enabling CredSSP. It is never written to setup state, SCM, a file, or a process command line. For a regular domain service identity, separately pass a `ServiceCredential`; built-in identities and gMSAs do not accept a service password.
 
 ## Azure DevOps Services example
 
@@ -48,6 +48,7 @@ The deployment system exposes its short-lived token as a secret environment vari
 
 ```powershell
 $configId = [Guid]::NewGuid()
+$provisioningCredential = Get-Credential -UserName '<domain>\<dpapi-ng-operator>'
 
 & '<release-folder>\Initialize-AdoAgentCluster.ps1' `
   -ServerType Services `
@@ -64,6 +65,7 @@ $configId = [Guid]::NewGuid()
   -ProtectorGroup '<domain>\<dpapi-ng-operator-group>' `
   -EscrowPath '<administrator-only-escrow-folder>' `
   -ServiceAccount '<domain>\<gmsa>$' `
+  -ProvisioningCredential $provisioningCredential `
   -ConfigId $configId `
   -ConfirmAgentIdle
 ```
@@ -77,6 +79,8 @@ Use `-RegistrationToken (Read-Host -AsSecureString)` for an attended token sourc
 Integrated authentication:
 
 ```powershell
+$provisioningCredential = Get-Credential -UserName '<domain>\<dpapi-ng-operator>'
+
 & '<release-folder>\Initialize-AdoAgentCluster.ps1' `
   -ServerType Server `
   -AzureDevOpsUrl 'https://<ado-server>/<collection>' `
@@ -90,6 +94,7 @@ Integrated authentication:
   -ProtectorGroup '<domain>\<dpapi-ng-operator-group>' `
   -EscrowPath '<administrator-only-escrow-folder>' `
   -ServiceAccount 'NT AUTHORITY\NETWORK SERVICE' `
+  -ProvisioningCredential $provisioningCredential `
   -ConfigId ([Guid]::NewGuid()) `
   -ConfirmAgentIdle
 ```
@@ -133,7 +138,7 @@ Phases are:
 Preflight -> PackageStaged -> RegisteredStopped -> KeyValidated -> ClusterInstalled -> Complete
 ```
 
-To resume, repeat the immutable inputs and add `-Resume`. A changed URL, pool, name, root, node set, identity, Microsoft agent-package choice, insecure-URL policy, or ConfigId is rejected. The toolkit package path may change to a different release whose manifest passes integrity validation. A misspelled or unqualified protector group may also be corrected only before any envelope, manifest, or rollback key artifact exists. The replacement must resolve to a security-enabled Active Directory group and be present in the current logon token. After confirmation, setup records the permitted correction before continuing. Once `RegisteredStopped` and the Offline check are recorded, a retry does not require the expired registration token.
+To resume, repeat the immutable inputs and add `-Resume`. A changed URL, pool, name, root, node set, identity, Microsoft agent-package choice, insecure-URL policy, or ConfigId is rejected. The toolkit package path may change to a different release whose manifest passes integrity validation. A misspelled or unqualified protector group may also be corrected only before any envelope, manifest, or rollback key artifact exists. The replacement must resolve to a security-enabled Active Directory group and be present in the current logon token. After confirmation, setup records the permitted correction before continuing. `ProvisioningCredential` is never part of immutable state and may be freshly acquired for every attempt. Once `RegisteredStopped` and the Offline check are recorded, a retry does not require the expired registration token.
 
 If setup sees an ambiguous mixture of registration files, it stops and preserves them. Do not delete individual dot-files. Follow the recovery procedure below.
 

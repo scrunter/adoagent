@@ -58,6 +58,8 @@ Unsupported and fail-closed in v1:
 For a new registration, use the deployment-authenticated setup entry point. The deployment system supplies an already authorized short-lived token by variable name; the script downloads a matching Microsoft agent, registers it stopped, and invokes the cluster installer:
 
 ```powershell
+$provisioningCredential = Get-Credential -UserName '<domain>\<protector-group-operator>'
+
 & '<release-folder>\Initialize-AdoAgentCluster.ps1' `
   -ServerType Services `
   -AzureDevOpsUrl 'https://dev.azure.com/<organization>' `
@@ -72,6 +74,7 @@ For a new registration, use the deployment-authenticated setup entry point. The 
   -ProtectorGroup '<domain>\<recovery-group>' `
   -EscrowPath '<secure-admin-escrow-folder>' `
   -ServiceAccount '<domain>\<gmsa>$' `
+  -ProvisioningCredential $provisioningCredential `
   -ConfigId ([Guid]::NewGuid()) `
   -ConfirmAgentIdle
 ```
@@ -99,13 +102,14 @@ The following is the short path for an already registered, idle nonproduction ag
      ToolkitPackagePath = '<release-folder>'
      ConfigId = $configId
      ConfirmAgentIdle = $true
+     ProvisioningCredential = Get-Credential -UserName '<domain\protector-group-operator>'
    }
 
    & '<release-folder>\Install-AdoAgentCluster.ps1' @install -WhatIf
    $result = & '<release-folder>\Install-AdoAgentCluster.ps1' @install
    ```
 
-   Add an in-memory `ServiceCredential` only for an ordinary domain identity. No PAT, password, certificate password, or key bytes belong in command history. The role is left Offline.
+   `ProvisioningCredential` is an authorized protector-group account used only for authenticated DPAPI-NG sealing on passive nodes; it is not persisted. Add an in-memory `ServiceCredential` only for an ordinary domain agent-service identity. No PAT, password, certificate password, or key bytes belong in command history. The role is left Offline.
 
 3. Bring the role online, move it to each node, and run the evaluation:
 

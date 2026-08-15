@@ -39,6 +39,7 @@ Use the packaged full installer on the current role/disk owner. It discovers eve
 
 ```powershell
 $release = '<release-folder>'
+$provisioningCredential = Get-Credential -UserName '<domain\protector-group-operator>'
 $install = @{
   ConfigId = [Guid]::NewGuid()
   AgentRoot = '<shared-agent-root>'
@@ -48,6 +49,7 @@ $install = @{
   EscrowPath = '<secure-admin-escrow-folder>'
   ToolkitPackagePath = $release
   ConfirmAgentIdle = $true
+  ProvisioningCredential = $provisioningCredential
 }
 
 & "$release\Install-AdoAgentCluster.ps1" @install -WhatIf
@@ -56,6 +58,8 @@ $result | Format-List
 ```
 
 Keep the generated ConfigId in the change record before execution. A retry with the same ConfigId reuses a matching escrow pair, original rollback snapshot, and matching node artifacts; it fails rather than overwriting a mismatched set. The result must report every shared-disk possible owner and `RoleState: Offline`.
+
+The provisioning credential is separate from `ServiceCredential`. It supplies a fresh domain logon only while the fixed helper unwraps DPAPI-NG on passive nodes, is never placed on a command line or in setup state, and may be removed from the caller after installation.
 
 For an ordinary domain service account, acquire the credential without embedding it:
 
