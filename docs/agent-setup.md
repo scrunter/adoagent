@@ -133,7 +133,7 @@ Phases are:
 Preflight -> PackageStaged -> RegisteredStopped -> KeyValidated -> ClusterInstalled -> Complete
 ```
 
-To resume, repeat the immutable inputs and add `-Resume`. A changed URL, pool, name, root, node set, identity, package choice, insecure-URL policy, or ConfigId is rejected. Once `RegisteredStopped` and the Offline check are recorded, a retry does not require the expired registration token.
+To resume, repeat the immutable inputs and add `-Resume`. A changed URL, pool, name, root, node set, identity, Microsoft agent-package choice, insecure-URL policy, or ConfigId is rejected. The toolkit package path may change to a different release whose manifest passes integrity validation; after confirmation, setup rebinds only that path in the state before continuing. Once `RegisteredStopped` and the Offline check are recorded, a retry does not require the expired registration token.
 
 If setup sees an ambiguous mixture of registration files, it stops and preserves them. Do not delete individual dot-files. Follow the recovery procedure below.
 

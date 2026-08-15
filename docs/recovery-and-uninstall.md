@@ -20,6 +20,8 @@ Read `<EscrowPath>\<ConfigId>.setup.json` and use its `phase`, `lastFailurePhase
 
 Every setup failure defensively stops the locally discovered service and leaves existing cluster key/service resources Offline. Never work around failure by starting the service directly.
 
+When recovery requires a corrected toolkit release, run that release with the original ConfigId, original setup inputs, and `-Resume`. The verified toolkit package path is the only state binding permitted to change; setup persists the new path after confirmation. Do not copy new binaries over an older release directory merely to preserve its pathname.
+
 ## Selector will not come online
 
 1. Leave the Generic Service offline.

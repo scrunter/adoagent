@@ -351,7 +351,7 @@ function Set-AdoNodeService {
             $result = Invoke-CimMethod -InputObject $service -MethodName Change -Arguments $arguments
             if ($result.ReturnValue -ne 0) { throw "Win32_Service.Change returned $($result.ReturnValue) on $env:COMPUTERNAME." }
         }
-        & sc.exe failure $definition.Name 'reset=' '0' 'actions=' '' | Out-Null
+        & sc.exe failure $definition.Name 'reset=' '0' 'actions=' '""' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Unable to disable SCM recovery for '$($definition.Name)' on $env:COMPUTERNAME." }
         & sc.exe config $definition.Name 'start=' 'demand' | Out-Null
         if ($LASTEXITCODE -ne 0) { throw "Unable to set Manual start for '$($definition.Name)' on $env:COMPUTERNAME." }

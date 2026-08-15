@@ -65,6 +65,15 @@ Describe 'AdoAgentClusterKey module contract' {
         $source | Should -Match 'writeRollbackSnapshot'
     }
 
+    It 'passes an explicit quoted empty recovery-action value to sc.exe' {
+        $moduleSource = Get-Content -LiteralPath $modulePath -Raw
+        $setupSource = Get-Content -LiteralPath $setupModulePath -Raw
+        foreach ($source in @($moduleSource, $setupSource)) {
+            $source | Should -Match "'actions='\s+'\x22\x22'"
+            $source | Should -Not -Match "'actions='\s+''"
+        }
+    }
+
     It 'makes reseal and purge explicit and restores rollback state' {
         $source = Get-Content -LiteralPath $modulePath -Raw
         $source | Should -Match 'if \(\$Reseal\)'

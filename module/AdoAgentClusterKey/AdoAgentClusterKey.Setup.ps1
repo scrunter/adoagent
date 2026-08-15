@@ -524,7 +524,7 @@ function Set-AdoSetupServiceStopped {
     Stop-Service -Name $ServiceName -Force -ErrorAction SilentlyContinue
     & sc.exe config $ServiceName 'start=' 'demand' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Unable to set the newly configured agent service to Manual.' }
-    & sc.exe failure $ServiceName 'reset=' '0' 'actions=' '' | Out-Null
+    & sc.exe failure $ServiceName 'reset=' '0' 'actions=' '""' | Out-Null
     if ($LASTEXITCODE -ne 0) { throw 'Unable to disable independent recovery for the newly configured agent service.' }
     $service = Get-Service -Name $ServiceName
     if ($service.Status -ne 'Stopped') { throw 'The newly configured agent service is not stopped.' }
@@ -651,6 +651,21 @@ function Get-AdoObjectSha256 {
         finally { $sha.Dispose() }
     }
     finally { [Array]::Clear($bytes, 0, $bytes.Length) }
+}
+
+function Test-AdoSetupToolkitPathOnlyChange {
+    param(
+        [Parameter(Mandatory = $true)]$SavedImmutable,
+        [Parameter(Mandatory = $true)]$RequestedImmutable
+    )
+    $savedCopy = $SavedImmutable | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $requestedCopy = $RequestedImmutable | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    if ($savedCopy.PSObject.Properties.Name -notcontains 'toolkitPackagePath' -or
+        $requestedCopy.PSObject.Properties.Name -notcontains 'toolkitPackagePath') {
+        return $false
+    }
+    $savedCopy.toolkitPackagePath = [string]$requestedCopy.toolkitPackagePath
+    return (Get-AdoObjectSha256 -InputObject $savedCopy) -eq (Get-AdoObjectSha256 -InputObject $requestedCopy)
 }
 
 function Write-AdoSetupState {
@@ -828,7 +843,13 @@ function Initialize-AdoAgentCluster {
     if ($bound.AgentPackagePath) { Assert-AdoNoReparsePoint -Path $bound.AgentPackagePath }
     $immutable = Get-AdoSetupImmutableData -Bound $bound
     $immutableHash = Get-AdoObjectSha256 -InputObject $immutable
-    if ($null -ne $state -and [string]$state.immutableSha256 -ne $immutableHash) { throw 'Resume inputs do not match the immutable setup state.' }
+    $rebindToolkitPackage = $false
+    if ($null -ne $state -and [string]$state.immutableSha256 -ne $immutableHash) {
+        if (-not $Resume -or -not (Test-AdoSetupToolkitPathOnlyChange -SavedImmutable $state.immutable -RequestedImmutable $immutable)) {
+            throw 'Resume inputs do not match the immutable setup state.'
+        }
+        $rebindToolkitPackage = $true
+    }
     $registrationSecret = $null
     $pool = $null
     $packageMetadata = $null
@@ -859,6 +880,13 @@ function Initialize-AdoAgentCluster {
         }
         if (-not $PSCmdlet.ShouldProcess($ClusterRoleName, "download, register, and cluster Azure DevOps agent '$AgentName' as ConfigId $ConfigId")) {
             return [pscustomobject]@{ ConfigId = $ConfigId; Planned = $true; StatePath = $statePath; Nodes = $Node; AgentRoot = $resolvedAgentRoot }
+        }
+        if ($rebindToolkitPackage) {
+            $currentOperation = 'RebindToolkitPackage'
+            $state.immutable = $immutable
+            $state.immutableSha256 = $immutableHash
+            $state.updatedUtc = [DateTime]::UtcNow.ToString('o')
+            Write-AdoSetupState -Path $statePath -State $state
         }
         if ($null -eq $state) {
             $currentOperation = 'CreateSetupState'
