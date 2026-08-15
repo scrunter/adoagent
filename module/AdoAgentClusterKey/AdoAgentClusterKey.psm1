@@ -383,19 +383,22 @@ function Test-AdoNodeIsLocal {
 function Test-AdoNodeKeyMaterialPresent {
     param(
         [Parameter(Mandatory = $true)][string]$Node,
-        [Parameter(Mandatory = $true)][Guid]$ConfigId
+        [Parameter(Mandatory = $true)][Guid]$ConfigId,
+        [string]$ConfigRoot = 'C:\ProgramData\AdoAgentClusterKey'
     )
     $check = {
-        param($id)
-        $directory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $id
+        param($id, $root)
+        $directory = Join-Path $root $id
         $config = Join-Path $directory 'config.json'
         $sealed = Join-Path $directory 'sealed.credentials_rsaparams'
-        return (Test-Path -LiteralPath $config -PathType Leaf) -and
-            (Test-Path -LiteralPath $sealed -PathType Leaf) -and
-            (Get-Item -LiteralPath $sealed).Length -gt 0
+        $configItem = Get-Item -LiteralPath $config -Force -ErrorAction SilentlyContinue
+        $sealedItem = Get-Item -LiteralPath $sealed -Force -ErrorAction SilentlyContinue
+        return $null -ne $configItem -and -not $configItem.PSIsContainer -and
+            $null -ne $sealedItem -and -not $sealedItem.PSIsContainer -and
+            $sealedItem.Length -gt 0
     }
-    if (Test-AdoNodeIsLocal -Node $Node) { return [bool](& $check $ConfigId.ToString('D')) }
-    return [bool](Invoke-Command -ComputerName $Node -ScriptBlock $check -ArgumentList $ConfigId.ToString('D'))
+    if (Test-AdoNodeIsLocal -Node $Node) { return [bool](& $check $ConfigId.ToString('D') $ConfigRoot) }
+    return [bool](Invoke-Command -ComputerName $Node -ScriptBlock $check -ArgumentList $ConfigId.ToString('D'), $ConfigRoot)
 }
 
 function Set-AdoNodeKeyMaterial {
@@ -534,7 +537,8 @@ function Set-AdoNodeKeyMaterial {
             $installOutput = & $helperPath @installArguments 2>&1
             if ($LASTEXITCODE -ne 0) { throw "Unable to install the staged sealed key on '$env:COMPUTERNAME' with sanitized helper response: $(($installOutput | Out-String).Trim())" }
         }
-        if (-not (Test-Path -LiteralPath $sealedPath -PathType Leaf) -or (Get-Item -LiteralPath $sealedPath).Length -eq 0) {
+        $sealedItem = Get-Item -LiteralPath $sealedPath -Force -ErrorAction SilentlyContinue
+        if ($null -eq $sealedItem -or $sealedItem.PSIsContainer -or $sealedItem.Length -eq 0) {
             throw "Node sealing did not create a nonempty sealed key on '$env:COMPUTERNAME'."
         }
 
@@ -1084,7 +1088,11 @@ function Invoke-AdoAgentClusterEvaluation {
                 $directory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $id
                 $config = Join-Path $directory 'config.json'
                 $sealed = Join-Path $directory 'sealed.credentials_rsaparams'
-                return (Test-Path -LiteralPath $config -PathType Leaf) -and (Test-Path -LiteralPath $sealed -PathType Leaf) -and ((Get-Item -LiteralPath $sealed).Length -gt 0)
+                $configItem = Get-Item -LiteralPath $config -Force -ErrorAction SilentlyContinue
+                $sealedItem = Get-Item -LiteralPath $sealed -Force -ErrorAction SilentlyContinue
+                return $null -ne $configItem -and -not $configItem.PSIsContainer -and
+                    $null -ne $sealedItem -and -not $sealedItem.PSIsContainer -and
+                    $sealedItem.Length -gt 0
             } -ArgumentList $ConfigId.ToString('D')
             Add-Evidence "Preflight:$clusterNode" ([bool]$ready) $started 'Node-local configuration and sealed key are present; cryptographic validation follows when this node owns storage.' @{ Node = $clusterNode }
         }

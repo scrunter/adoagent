@@ -101,6 +101,27 @@ Describe 'AdoAgentClusterKey module contract' {
         }
     }
 
+    It 'detects an existing hidden sealed key during resume' {
+        $global:AdoHiddenKeyRoot = Join-Path $TestDrive 'node-key-material'
+        $global:AdoHiddenKeyConfigId = [Guid]::NewGuid()
+        $configDirectory = Join-Path $global:AdoHiddenKeyRoot $global:AdoHiddenKeyConfigId.ToString('D')
+        New-Item -ItemType Directory -Path $configDirectory | Out-Null
+        Set-Content -LiteralPath (Join-Path $configDirectory 'config.json') -Value '{}'
+        $sealedPath = Join-Path $configDirectory 'sealed.credentials_rsaparams'
+        Set-Content -LiteralPath $sealedPath -Value 'protected-key-bytes'
+        (Get-Item -LiteralPath $sealedPath).Attributes = [IO.FileAttributes]::Hidden
+        try {
+            InModuleScope AdoAgentClusterKey {
+                (Test-AdoNodeKeyMaterialPresent -Node $env:COMPUTERNAME -ConfigId $global:AdoHiddenKeyConfigId -ConfigRoot $global:AdoHiddenKeyRoot) | Should -Be $true
+            }
+        }
+        finally {
+            (Get-Item -LiteralPath $sealedPath -Force).Attributes = [IO.FileAttributes]::Normal
+            Remove-Variable -Name AdoHiddenKeyRoot -Scope Global -ErrorAction SilentlyContinue
+            Remove-Variable -Name AdoHiddenKeyConfigId -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'uses the exact unsigned byte types required by Win32_Service.Create' {
         $createMethod = (Get-CimClass -ClassName Win32_Service).CimClassMethods['Create']
         $createMethod.Parameters['ServiceType'].CimType | Should -Be 'UInt8'
