@@ -60,6 +60,34 @@ Describe 'Permanent cluster-agent reset contract' {
         $resetSource.IndexOf('Get-AdoRegistrationSecret') | Should -BeGreaterThan $resetSource.IndexOf('$PSCmdlet.ShouldProcess')
     }
 
+    It 'accepts rollback entries for nodes where the service did not previously exist' {
+        InModuleScope AdoAgentClusterKey {
+            $snapshot = [pscustomobject]@{
+                ServiceName = 'vstsagent.contoso.pool.cluster'
+                Services = @(
+                    [pscustomobject]@{ Node = 'NODE-A'; Existed = $true; Name = 'vstsagent.contoso.pool.cluster' }
+                    [pscustomobject]@{ Node = 'NODE-B'; Existed = $false }
+                    $null
+                )
+            }
+
+            $names = @(Get-AdoRollbackServiceNames -RollbackSnapshot $snapshot)
+
+            $names.Count | Should -Be 1
+            $names[0] | Should -Be 'vstsagent.contoso.pool.cluster'
+        }
+    }
+
+    It 'fails closed when a rollback snapshot identifies no service' {
+        InModuleScope AdoAgentClusterKey {
+            $snapshot = [pscustomobject]@{
+                Services = @([pscustomobject]@{ Node = 'NODE-B'; Existed = $false })
+            }
+
+            @(Get-AdoRollbackServiceNames -RollbackSnapshot $snapshot).Count | Should -Be 0
+        }
+    }
+
     It 'binds deletion to runtime configuration and preserves role and disk' {
         $source = Get-Content -LiteralPath $modulePath -Raw
         $resetStart = $source.IndexOf('function Reset-AdoAgentCluster')

@@ -1229,6 +1229,28 @@ function Invoke-AdoAgentRegistrationRemoval {
     }
 }
 
+function Get-AdoRollbackServiceNames {
+    param(
+        [Parameter(Mandatory = $true)][object]$RollbackSnapshot
+    )
+    $names = @()
+    $servicesProperty = $RollbackSnapshot.PSObject.Properties['Services']
+    if ($null -ne $servicesProperty) {
+        foreach ($serviceSnapshot in @($servicesProperty.Value)) {
+            if ($null -eq $serviceSnapshot) { continue }
+            $nameProperty = $serviceSnapshot.PSObject.Properties['Name']
+            if ($null -ne $nameProperty -and -not [string]::IsNullOrWhiteSpace([string]$nameProperty.Value)) {
+                $names += [string]$nameProperty.Value
+            }
+        }
+    }
+    $serviceNameProperty = $RollbackSnapshot.PSObject.Properties['ServiceName']
+    if ($null -ne $serviceNameProperty -and -not [string]::IsNullOrWhiteSpace([string]$serviceNameProperty.Value)) {
+        $names += [string]$serviceNameProperty.Value
+    }
+    @($names | Sort-Object -Unique)
+}
+
 function Reset-AdoAgentCluster {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param(
@@ -1276,10 +1298,7 @@ function Reset-AdoAgentCluster {
     if (-not (Test-Path -LiteralPath $rollbackPath -PathType Leaf)) { throw "Rollback snapshot '$rollbackPath' is missing." }
     if (-not (Test-Path -LiteralPath $runtimeConfigPath -PathType Leaf)) { throw "Runtime configuration '$runtimeConfigPath' is missing." }
     $rollbackSnapshot = Get-Content -LiteralPath $rollbackPath -Raw | ConvertFrom-Json
-    [string[]]$serviceNames = @(
-        @($rollbackSnapshot.Services | ForEach-Object { [string]$_.Name })
-        [string]$rollbackSnapshot.ServiceName
-    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+    [string[]]$serviceNames = @(Get-AdoRollbackServiceNames -RollbackSnapshot $rollbackSnapshot)
     if ($serviceNames.Count -eq 0) { throw 'Rollback snapshot does not identify the agent service to remove.' }
     $serviceNamePayload = [pscustomobject]@{ Names = $serviceNames }
     $runtimeConfig = Get-Content -LiteralPath $runtimeConfigPath -Raw | ConvertFrom-Json
