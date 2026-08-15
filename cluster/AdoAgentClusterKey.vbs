@@ -7,6 +7,16 @@ gConfigId = ""
 
 Function Open()
     On Error Resume Next
+    If Resource.PropertyExists("ConfigId") = False Then
+        Resource.AddProperty "ConfigId"
+        If Err.Number <> 0 Then
+            Resource.LogInformation "ADOCK1901 Open: unable to declare ConfigId."
+            Err.Clear
+            Open = False
+            Exit Function
+        End If
+    End If
+
     gConfigId = CStr(Resource.ConfigId)
     If Err.Number <> 0 Then
         Resource.LogInformation "ADOCK1901 Open: ConfigId is not configured."
@@ -15,6 +25,15 @@ Function Open()
         Exit Function
     End If
     On Error GoTo 0
+
+    ' Open is also called while WSFC discovers the script's private-property
+    ' schema. An empty value is therefore valid here, but Online still fails
+    ' closed because RunHelper requires a canonical GUID.
+    If Len(gConfigId) = 0 Then
+        Resource.LogInformation "ADOCK1901 Open: ConfigId is not configured."
+        Open = True
+        Exit Function
+    End If
 
     If Not IsCanonicalGuid(gConfigId) Then
         Resource.LogInformation "ADOCK1902 Open: ConfigId is invalid."

@@ -156,6 +156,26 @@ Describe 'AdoAgentClusterKey module contract' {
         $source | Should -Match 'FailureActionsBase64'
     }
 
+    It 'declares the ConfigId Generic Script private property before reading it' {
+        $openStart = $vbsSource.IndexOf('Function Open()')
+        $openEnd = $vbsSource.IndexOf('Function Online()')
+        $openSource = $vbsSource.Substring($openStart, $openEnd - $openStart)
+        $openSource | Should -Match 'Resource\.PropertyExists\("ConfigId"\)'
+        $openSource | Should -Match 'Resource\.AddProperty\s+"ConfigId"'
+        $openSource.IndexOf('Resource.AddProperty "ConfigId"') | Should -BeLessThan $openSource.IndexOf('gConfigId = CStr(Resource.ConfigId)')
+        $openSource | Should -Match 'If Len\(gConfigId\) = 0 Then'
+    }
+
+    It 'reports the exact WSFC property when a resource update fails' {
+        $source = Get-Content -LiteralPath $modulePath -Raw
+        $source | Should -Match 'Unable to set private cluster property ''\$Name'''
+        $source | Should -Match 'Unable to set common cluster property ''\$Name'''
+        $source | Should -Match 'Set-AdoClusterCommonProperty.+PendingTimeout'
+        $source | Should -Match 'Set-AdoClusterCommonProperty.+LooksAlivePollInterval'
+        $source | Should -Match 'Set-AdoClusterCommonProperty.+IsAlivePollInterval'
+        $source | Should -Match 'Set-AdoClusterCommonProperty.+RestartAction'
+    }
+
     It 'extracts possible owners from the ClusterOwnerNodeList OwnerNodes collection' {
         $ownerNodes = New-Object System.Collections.Specialized.StringCollection
         [void]$ownerNodes.Add('node-b')

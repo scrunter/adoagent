@@ -43,14 +43,23 @@ $harness = @'
 Option Explicit
 Class FakeResourceClass
     Public ConfigId
+    Public AddedProperty
+    Public Function PropertyExists(name)
+        PropertyExists = (AddedProperty = name)
+    End Function
+    Public Sub AddProperty(name)
+        AddedProperty = name
+    End Sub
     Public Sub LogInformation(message)
     End Sub
 End Class
 Dim Resource
 Set Resource = New FakeResourceClass
-Resource.ConfigId = "11111111-2222-3333-4444-555555555555"
 '@ + "`r`n" + $body + @'
 
+If Not Open() Then WScript.Quit 8
+If Resource.AddedProperty <> "ConfigId" Then WScript.Quit 9
+Resource.ConfigId = "11111111-2222-3333-4444-555555555555"
 If Not Open() Then WScript.Quit 9
 WScript.Quit 0
 '@
