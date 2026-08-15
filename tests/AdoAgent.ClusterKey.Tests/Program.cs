@@ -16,6 +16,7 @@ internal static class Program
         ("Classic LocalMachine DPAPI round trips", ClassicDpapiRoundTrip),
         ("DPAPI-NG descriptor round trips", DpapiNgRoundTrip),
         ("Additional credential stores fail closed", AdditionalCredentialDetection),
+        ("Agent metadata accepts the Microsoft UTF-8 BOM format", AgentMetadataAcceptsUtf8Bom),
         ("SDDL comparison tolerates only the Windows auto-inherited marker", SddlComparisonIgnoresOnlyAutoInherited),
         ("Export, seal, activate, and probe preserve one key", EndToEndWorkflow),
         ("Activation rejects an unexpected logical agent", WrongAgentRejected),
@@ -188,6 +189,21 @@ internal static class Program
             CryptographicOperations.ZeroMemory(envelope);
             CryptographicOperations.ZeroMemory(recovered);
         }
+    }
+
+    private static void AgentMetadataAcceptsUtf8Bom()
+    {
+        using TemporaryDirectory temporary = new();
+        string path = Path.Combine(temporary.Path, ".agent");
+        File.WriteAllText(
+            path,
+            "{\"agentId\":42,\"agentName\":\"cluster-agent\",\"agentVersion\":\"5.277.0\"}",
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: true));
+
+        AgentMetadata metadata = JsonContracts.ReadAgentMetadata(temporary.Path);
+        Equal("42", metadata.AgentId, "BOM agent ID");
+        Equal("cluster-agent", metadata.AgentName, "BOM agent name");
+        Equal("5.277.0", metadata.AgentVersion, "BOM agent version");
     }
 
     private static void AdditionalCredentialDetection()

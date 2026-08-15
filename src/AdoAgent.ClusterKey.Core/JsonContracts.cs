@@ -18,7 +18,9 @@ public static class JsonContracts
 
         try
         {
-            using JsonDocument document = JsonDocument.Parse(File.ReadAllBytes(path));
+            // Microsoft IOUtil.SaveObject writes .agent with Encoding.UTF8, including its preamble.
+            // Read text so BOM detection occurs before System.Text.Json parses the document.
+            using JsonDocument document = JsonDocument.Parse(File.ReadAllText(path, Encoding.UTF8));
             JsonElement root = document.RootElement;
             string agentId = GetScalarString(root, "agentId", required: true)!;
             string agentName = GetScalarString(root, "agentName", required: true)!;
