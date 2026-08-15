@@ -168,9 +168,9 @@ Confirm every possible owner has a nonempty node-local sealed file without readi
 
 ```powershell
 $owners = @(
-    Get-ClusterResource -Name $install.SharedDiskResourceName |
-        Get-ClusterOwnerNode |
-        ForEach-Object Name
+    (Get-ClusterResource -Name $install.SharedDiskResourceName |
+        Get-ClusterOwnerNode).OwnerNodes |
+        ForEach-Object { [string]$_ }
 )
 
 Invoke-Command -ComputerName $owners -ArgumentList $configId -ScriptBlock {

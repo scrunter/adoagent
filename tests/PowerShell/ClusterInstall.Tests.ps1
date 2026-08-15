@@ -25,6 +25,8 @@ Describe 'Full cluster-node installation entry point' {
     It 'discovers every owner from the shared disk and requires each node to be Up' {
         $source = Get-Content -LiteralPath $installScriptPath -Raw
         $source | Should -Match '\$disk \| Get-ClusterOwnerNode'
+        $source | Should -Match '\$ownerNodeList\.OwnerNodes'
+        $source | Should -Not -Match 'Get-ClusterOwnerNode \| ForEach-Object \{ \$_\.Name \}'
         $source | Should -Match '\$disk\.State -ne ''Online'''
         $source | Should -Match 'Get-ClusterNode -Name \$nodeName'
         $source | Should -Match '\$clusterNode\.State -ne ''Up'''

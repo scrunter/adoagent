@@ -72,6 +72,26 @@ Describe 'AdoAgentClusterKey module contract' {
         $source | Should -Match 'Set-ClusterResourceDependency'
         $source | Should -Match 'FailureActionsBase64'
     }
+
+    It 'extracts possible owners from the ClusterOwnerNodeList OwnerNodes collection' {
+        $ownerNodes = New-Object System.Collections.Specialized.StringCollection
+        [void]$ownerNodes.Add('node-b')
+        [void]$ownerNodes.Add('node-a')
+        [void]$ownerNodes.Add('node-a')
+        $global:AdoOwnerNodeList = [pscustomobject]@{
+            ClusterObject = 'Cluster Virtual Disk (ADOT)'
+            OwnerNodes = $ownerNodes
+        }
+        try {
+            InModuleScope AdoAgentClusterKey {
+                $actual = @(ConvertFrom-AdoClusterOwnerNodeList -OwnerNodeList $global:AdoOwnerNodeList)
+                $actual | Should -Be @('node-a', 'node-b')
+            }
+        }
+        finally {
+            Remove-Variable -Name AdoOwnerNodeList -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 Describe 'Package integrity policy' {

@@ -153,7 +153,25 @@ function Get-AdoResourceOrNull {
 
 function Get-AdoPossibleOwners {
     param([Parameter(Mandatory = $true)]$Resource)
-    return @($Resource | Get-ClusterOwnerNode | ForEach-Object { $_.Name })
+    $ownerNodeList = $Resource | Get-ClusterOwnerNode
+    if ($null -eq $ownerNodeList) { return @() }
+    return @(ConvertFrom-AdoClusterOwnerNodeList -OwnerNodeList $ownerNodeList)
+}
+
+function ConvertFrom-AdoClusterOwnerNodeList {
+    param([Parameter(Mandatory = $true)]$OwnerNodeList)
+    $ownerNodesProperty = $OwnerNodeList.PSObject.Properties['OwnerNodes']
+    if ($null -eq $ownerNodesProperty) {
+        throw 'Get-ClusterOwnerNode returned an unexpected result without an OwnerNodes property.'
+    }
+
+    $names = foreach ($ownerNode in @($ownerNodesProperty.Value)) {
+        if ($null -eq $ownerNode) { continue }
+        $nameProperty = $ownerNode.PSObject.Properties['Name']
+        $name = if ($null -ne $nameProperty) { [string]$nameProperty.Value } else { [string]$ownerNode }
+        if (-not [string]::IsNullOrWhiteSpace($name)) { $name }
+    }
+    return @($names | Sort-Object -Unique)
 }
 
 function Assert-AdoRoleIdle {
