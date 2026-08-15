@@ -19,6 +19,7 @@ internal static class Program
         ("Agent metadata accepts the Microsoft UTF-8 BOM format", AgentMetadataAcceptsUtf8Bom),
         ("SDDL comparison tolerates only the Windows auto-inherited marker", SddlComparisonIgnoresOnlyAutoInherited),
         ("Export, seal, activate, and probe preserve one key", EndToEndWorkflow),
+        ("Staged node sealing installs the validated ciphertext", StagedSealInstallation),
         ("Activation rejects an unexpected logical agent", WrongAgentRejected),
         ("Quick probe detects ciphertext mismatch", CiphertextMismatchRejected),
         ("Tampered escrow envelope is rejected", TamperedEnvelopeRejected),
@@ -255,6 +256,33 @@ internal static class Program
 
         OperationResult noOp = operations.Activate(workspace.ConfigId, workspace.ConfigRoot);
         Equal(false, noOp.Data["changed"], "idempotent activation");
+    }
+
+    private static void StagedSealInstallation()
+    {
+        FakeDataProtector protector = new();
+        using TestWorkspace workspace = new(protector);
+        KeyOperations operations = new(protector, enforceSealedKeyAcl: false);
+        string sid = WindowsIdentity.GetCurrent().User?.Value
+            ?? throw new InvalidOperationException("Current identity has no SID.");
+        string staged = Path.Combine(workspace.Root, "staged.sealed.credentials_rsaparams");
+
+        _ = operations.Export(workspace.AgentRoot, sid, workspace.Envelope, workspace.Manifest, overwrite: false);
+        _ = operations.Seal(workspace.Envelope, workspace.Manifest, workspace.ConfigId, staged, overwrite: false);
+        _ = operations.InstallSealed(staged, workspace.Manifest, workspace.ConfigId, overwrite: false, workspace.ConfigRoot);
+
+        byte[] stagedBytes = File.ReadAllBytes(staged);
+        byte[] installedBytes = File.ReadAllBytes(workspace.SealedKey);
+        try
+        {
+            True(stagedBytes.AsSpan().SequenceEqual(installedBytes), "installed ciphertext equality");
+            True((File.GetAttributes(workspace.SealedKey) & FileAttributes.Hidden) != 0, "installed hidden attribute");
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(stagedBytes);
+            CryptographicOperations.ZeroMemory(installedBytes);
+        }
     }
 
     private static void SddlComparisonIgnoresOnlyAutoInherited()

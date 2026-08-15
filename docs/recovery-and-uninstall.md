@@ -40,7 +40,7 @@ When recovery requires a corrected toolkit release, run that release with the or
 
 ## Loss of a node-local sealed copy
 
-Use escrow to reseal on that node. DPAPI-NG authorization occurs only during this maintenance action. If escrow unwrap returns code 14, validate group SID, current token, domain/DC access, and envelope integrity. Never move a sealed blob from another node; that correctly produces wrong-machine DPAPI failure.
+Use escrow to reseal on that node. DPAPI-NG authorization occurs only during this maintenance action. Supply a fresh in-memory `ProvisioningCredential` when the command is orchestrated remotely; ordinary WinRM cannot perform the required domain-controller second hop. If escrow unwrap returns code 14, validate group SID, credential membership, local-logon permission, domain/DC access, and envelope integrity. Never move a sealed blob from another node; that correctly produces wrong-machine DPAPI failure.
 
 ## Loss of active shared key
 

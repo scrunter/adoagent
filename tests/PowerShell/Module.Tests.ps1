@@ -74,6 +74,29 @@ Describe 'AdoAgentClusterKey module contract' {
         }
     }
 
+    It 'uses a fresh in-memory domain logon for remote DPAPI-NG sealing' {
+        foreach ($name in @('Initialize-AdoAgentCluster', 'Install-AdoAgentCluster', 'Add-AdoAgentClusterNode', 'Repair-AdoAgentCluster')) {
+            ((Get-Command $name).Parameters.Keys -contains 'ProvisioningCredential') | Should -Be $true
+        }
+
+        $source = Get-Content -LiteralPath $modulePath -Raw
+        $start = $source.IndexOf('function Set-AdoNodeKeyMaterial')
+        $end = $source.IndexOf('function Remove-AdoLegacySigningStateOnNode')
+        $sealingSource = $source.Substring($start, $end - $start)
+        $sealingSource | Should -Match 'Test-AdoNodeIsLocal'
+        $sealingSource | Should -Match 'Start-Process.+-Credential \$credential.+-WindowStyle Hidden'
+        $sealingSource | Should -Not -Match 'GetNetworkCredential'
+        $sealingSource | Should -Not -Match '\.Password'
+    }
+
+    It 'recognizes short and fully qualified names for the local sealing node' {
+        InModuleScope AdoAgentClusterKey {
+            (Test-AdoNodeIsLocal -Node $env:COMPUTERNAME) | Should -Be $true
+            (Test-AdoNodeIsLocal -Node ($env:COMPUTERNAME + '.contoso.example')) | Should -Be $true
+            (Test-AdoNodeIsLocal -Node 'another-node.contoso.example') | Should -Be $false
+        }
+    }
+
     It 'uses the exact unsigned byte types required by Win32_Service.Create' {
         $createMethod = (Get-CimClass -ClassName Win32_Service).CimClassMethods['Create']
         $createMethod.Parameters['ServiceType'].CimType | Should -Be 'UInt8'

@@ -169,6 +169,7 @@ $setupParameters = @{
     ServiceAccount                           = 'CONTOSO\svc-adoagent$'
     ConfigId                                 = $configId
     ConfirmAgentIdle                         = $true
+    ProvisioningCredential                   = Get-Credential -UserName 'CONTOSO\AdoAgentKeyOperator'
 }
 ```
 
@@ -179,6 +180,8 @@ $setupParameters.ServiceAccount = 'CONTOSO\svc-adoagent'
 $setupParameters.ServiceCredential =
     Get-Credential -UserName 'CONTOSO\svc-adoagent'
 ```
+
+`ProvisioningCredential` is distinct from the Azure DevOps registration token and the agent `ServiceCredential`. It must identify a protector-group operator permitted to log on to each node. The toolkit uses it only for the passive-node DPAPI-NG unwrap process and never stores it.
 
 Azure DevOps Server can instead use `Integrated`, `Negotiate`, or `PersonalAccessToken` registration. See [New agent setup](agent-setup.md#azure-devops-server-examples).
 

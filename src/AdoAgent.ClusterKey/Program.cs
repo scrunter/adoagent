@@ -32,6 +32,17 @@ internal static class Program
                     command.RequiredGuid("config-id"),
                     outputPath: null,
                     command.Has("force")),
+                "seal-staging" => new KeyOperations(new NativeDataProtector(), enforceSealedKeyAcl: false).Seal(
+                    command.Required("envelope"),
+                    command.Required("manifest"),
+                    command.RequiredGuid("config-id"),
+                    command.Required("output"),
+                    command.Has("force")),
+                "install-sealed" => operations.InstallSealed(
+                    command.Required("sealed"),
+                    command.Required("manifest"),
+                    command.RequiredGuid("config-id"),
+                    command.Has("force")),
                 "activate" => operations.Activate(
                     command.RequiredGuid("config-id"),
                     configRoot: null),
@@ -75,6 +86,8 @@ internal static class Program
                 "inspect --agent-root <path> [--json]",
                 "export --agent-root <path> --protector-sid <sid> --envelope <path> --manifest <path> [--force] [--json]",
                 "seal --envelope <path> --manifest <path> --config-id <guid> [--force] [--json]",
+                "seal-staging --envelope <path> --manifest <path> --config-id <guid> --output <path> [--force] [--json]",
+                "install-sealed --sealed <path> --manifest <path> --config-id <guid> [--force] [--json]",
                 "activate --config-id <guid> [--json]",
                 "probe --config-id <guid> --mode quick|full [--json]",
             },

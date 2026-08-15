@@ -45,6 +45,8 @@ internal sealed class CommandLine
             "inspect" => ["agent-root", "json"],
             "export" => ["agent-root", "protector-sid", "envelope", "manifest", "force", "json"],
             "seal" => ["envelope", "manifest", "config-id", "force", "json"],
+            "seal-staging" => ["envelope", "manifest", "config-id", "output", "force", "json"],
+            "install-sealed" => ["sealed", "manifest", "config-id", "force", "json"],
             "activate" => ["config-id", "json"],
             "probe" => ["config-id", "mode", "json"],
             "help" or "--help" or "-h" => ["json"],

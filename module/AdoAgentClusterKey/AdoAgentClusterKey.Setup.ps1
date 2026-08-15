@@ -802,6 +802,7 @@ function Initialize-AdoAgentCluster {
         [string]$ServiceResourceName,
         [Parameter(Mandatory = $true)][string]$ServiceAccount,
         [System.Management.Automation.PSCredential]$ServiceCredential,
+        [System.Management.Automation.PSCredential]$ProvisioningCredential,
         [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
         [switch]$Resume,
         [switch]$ReplaceExistingAgent,
@@ -860,6 +861,14 @@ function Initialize-AdoAgentCluster {
     $tokenOptional = $phaseIndex -ge (Get-AdoSetupPhaseIndex -Phase 'RegisteredStopped') -and [bool]$state.registrationOfflineVerified
     Assert-AdoSetupParameters -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationToken $RegistrationToken -RegistrationTokenEnvironmentVariableName $RegistrationTokenEnvironmentVariableName -RegistrationCredential $RegistrationCredential -ServiceAccount $ServiceAccount -ServiceCredential $ServiceCredential -WorkDirectory $WorkDirectory -AllowInsecureServerUrl:$AllowInsecureServerUrl -TokenOptional:$tokenOptional
     $context = Assert-AdoSetupClusterContext -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -Node $Node -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName
+    if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled')) {
+        $remoteNodesNeedingSeal = @($Node | Where-Object {
+            -not (Test-AdoNodeIsLocal -Node $_) -and -not (Test-AdoNodeKeyMaterialPresent -Node $_ -ConfigId $ConfigId)
+        })
+        if ($remoteNodesNeedingSeal.Count -gt 0 -and $null -eq $ProvisioningCredential) {
+            throw "ProvisioningCredential is required for DPAPI-NG sealing on remote nodes: $($remoteNodesNeedingSeal -join ', '). Acquire it with Get-Credential; it is used in memory and is not stored."
+        }
+    }
     $identityChecks = @(Get-AdoServiceIdentityChecks -ServiceIdentity $ServiceAccount -Node $Node -AgentRoot $resolvedAgentRoot)
     $failedIdentityChecks = @($identityChecks | Where-Object { -not $_.Passed })
     if ($failedIdentityChecks.Count -gt 0) {
@@ -1038,7 +1047,7 @@ function Initialize-AdoAgentCluster {
             $currentOperation = 'ValidateClusterPrerequisites'
             Test-AdoAgentClusterPrerequisite -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -Node $Node -PackagePath $resolvedToolkit -ServiceIdentity $ServiceAccount -WorkDirectory $WorkDirectory -ThrowOnFailure | Out-Null
             $currentOperation = 'InstallClusterResources'
-            Install-AdoAgentCluster -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -EscrowPath $resolvedEscrow -PackagePath $resolvedToolkit -ConfirmAgentIdle -Node $Node -ConfigId $ConfigId -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -ServiceCredential $ServiceCredential -Confirm:$false | Out-Null
+            Install-AdoAgentCluster -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -EscrowPath $resolvedEscrow -PackagePath $resolvedToolkit -ConfirmAgentIdle -Node $Node -ConfigId $ConfigId -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -ServiceCredential $ServiceCredential -ProvisioningCredential $ProvisioningCredential -Confirm:$false | Out-Null
             Set-AdoSetupPhase -State $state -Phase 'ClusterInstalled' -StatePath $statePath
             $phaseIndex = Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled'
         }

@@ -17,7 +17,8 @@ An interrupted job does not resume. Use pipeline retry policy for node failure d
 First add the node as a possible owner of the shared disk and satisfy all prerequisites. Keep the ADO service idle/offline. The provisioning identity must be in the DPAPI-NG protector group.
 
 ```powershell
-$credential = Get-Credential -UserName '<domain\service-account>' # omit for gMSA/built-in
+$serviceCredential = Get-Credential -UserName '<domain\service-account>' # omit for gMSA/built-in
+$provisioningCredential = Get-Credential -UserName '<domain\protector-group-operator>'
 
 Add-AdoAgentClusterNode `
   -Node '<new-node>' `
@@ -30,7 +31,8 @@ Add-AdoAgentClusterNode `
   -EnvelopePath '<secure-escrow-envelope>' `
   -ManifestPath '<secure-escrow-manifest>' `
   -PackagePath '<approved-release-folder>' `
-  -ServiceCredential $credential `
+  -ServiceCredential $serviceCredential `
+  -ProvisioningCredential $provisioningCredential `
   -ConfirmAgentIdle
 ```
 
@@ -70,7 +72,7 @@ Repair-AdoAgentCluster `
   -ConfirmAgentIdle
 ```
 
-Use `-Reseal -EnvelopePath ... -ManifestPath ...` only when node ciphertext needs recreation from the same escrow. Repair checks the sealed/config files on passive nodes; a full probe is possible only on the current storage owner.
+Use `-Reseal -EnvelopePath ... -ManifestPath ... -ProvisioningCredential $provisioningCredential` only when node ciphertext needs recreation from the same escrow. `ProvisioningCredential` is required when the reseal set includes passive nodes. Repair checks the sealed/config files on passive nodes; a full probe is possible only on the current storage owner.
 
 ## Recover or enroll from escrow
 

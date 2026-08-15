@@ -184,6 +184,77 @@ public sealed class KeyOperations(IDataProtector protector, bool enforceSealedKe
         }
     }
 
+    public OperationResult InstallSealed(
+        string stagedSealedPath,
+        string manifestPath,
+        Guid configId,
+        bool overwrite,
+        string? configRoot = null)
+    {
+        EscrowManifest manifest = JsonContracts.ReadManifest(manifestPath);
+        if (!File.Exists(stagedSealedPath))
+        {
+            throw new ToolException(ExitCode.MissingFile, "The staged node-sealed key is missing.");
+        }
+
+        PathSecurity.RejectReparsePoint(stagedSealedPath, "staged node-sealed key");
+        byte[] staged = File.ReadAllBytes(stagedSealedPath);
+        byte[] plaintext = [];
+        RsaKeyDocument? keyDocument = null;
+        try
+        {
+            plaintext = _protector.UnprotectForLocalMachine(staged);
+            keyDocument = RsaKeyDocument.Parse(plaintext);
+            if (keyDocument.IsNamedContainer)
+            {
+                throw new ToolException(ExitCode.NamedContainerKey, "The staged key contains a named-container reference.");
+            }
+
+            EnsureFingerprint(manifest.PublicKeySha256, keyDocument.GetPublicKeyFingerprint());
+            string destination = Path.Combine(
+                configRoot ?? JsonContracts.GetDefaultConfigRoot(),
+                configId.ToString("D"),
+                "sealed.credentials_rsaparams");
+            Directory.CreateDirectory(Path.GetDirectoryName(destination)!);
+            string? sealedSddl = _enforceSealedKeyAcl ? "D:P(A;;FA;;;SY)(A;;FA;;;BA)" : null;
+            AtomicFile.WriteBytes(
+                destination,
+                staged,
+                overwrite,
+                sealedSddl,
+                hidden: true);
+
+            byte[] installed = File.ReadAllBytes(destination);
+            try
+            {
+                if (!CryptographicOperations.FixedTimeEquals(staged, installed))
+                {
+                    throw new ToolException(ExitCode.ActivationFailure, "The installed node-sealed key does not match the validated staging ciphertext.");
+                }
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(installed);
+            }
+
+            return new OperationResult(
+                "Staged node-local DPAPI key installed and verified.",
+                new Dictionary<string, object?>
+                {
+                    ["configId"] = configId.ToString("D"),
+                    ["agentId"] = manifest.AgentId,
+                    ["publicKeySha256"] = manifest.PublicKeySha256,
+                    ["sealedKeyPath"] = Path.GetFullPath(destination),
+                });
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(staged);
+            CryptographicOperations.ZeroMemory(plaintext);
+            keyDocument?.Clear();
+        }
+    }
+
     public OperationResult Activate(Guid configId, string? configRoot = null)
     {
         RuntimeConfiguration configuration = JsonContracts.ReadRuntimeConfiguration(configId, configRoot);

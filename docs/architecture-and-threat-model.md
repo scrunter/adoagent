@@ -11,7 +11,7 @@ For a new agent, an external deployment service first supplies a short-lived Azu
 1. The registered agent owner decrypts `.credentials_rsaparams` with classic machine-scope DPAPI during an authorized maintenance window.
 2. Plaintext RSA JSON exists only in helper-controlled memory. The helper validates file-backed mode, imports only the public components to calculate SHA-256 over DER SubjectPublicKeyInfo, and zeroes plaintext buffers.
 3. The helper creates one DPAPI-NG envelope with descriptor `SID=<protector-group-sid>`. The envelope and nonsecret manifest go to administrator-controlled escrow.
-4. An authorized provisioning identity unwraps the envelope on each possible owner and immediately re-protects the exact JSON with classic `LocalMachine` DPAPI. Each resulting ciphertext is usable only on that node.
+4. The current node seals directly under the elevated provisioning operator. On each passive node, ordinary WinRM stages the envelope and starts the fixed helper in a fresh logon session created from an in-memory protector-group `PSCredential`. The delegated helper can write only a temporary classic-DPAPI ciphertext; the elevated installer validates its fingerprint and atomically installs it at the fixed ProgramData path. Each resulting ciphertext is usable only on that node. No CredSSP configuration or reusable credential file is created.
 5. At runtime, WSFC brings the shared disk online. The Generic Script invokes `activate`; the helper validates configuration, the `.agent` identity, the node blob, paths, and public-key fingerprint. It replaces the shared key with `MoveFileEx(REPLACE_EXISTING | WRITE_THROUGH)` and reapplies the captured DACL/owner/group SDDL plus Hidden attribute.
 6. Only after a successful selector `Online` does WSFC start the Generic Service.
 
@@ -19,7 +19,7 @@ For a new agent, an external deployment service first supplies a short-lived Azu
 |---|---|---|
 | New-agent bootstrap | elevated deployment process on current owner | supplied short-lived Azure DevOps authorization, package download, service creation; no escrow read after handoff |
 | Initial export | elevated provisioning operator on current owner | source agent root, escrow create, protector-group membership |
-| Node enrollment | elevated provisioning operator through WinRM | DPAPI-NG unwrap, local install/config/service administration |
+| Node enrollment | elevated installer through WinRM plus a fresh, in-memory protector-group logon on passive nodes | DPAPI-NG unwrap in the delegated helper; node-local ciphertext install/config/service administration in the elevated installer |
 | Generic Script/helper | Resource Monitor, normally LocalSystem | local config/sealed key and shared key target only |
 | ADO service | configured service identity | agent root and pipeline working folders; no escrow access |
 | Pipeline job | child of ADO service | no toolkit config, sealed key, package write, or escrow access |
