@@ -231,6 +231,38 @@ Describe 'Deployment-authenticated agent setup contract' {
         $setupSource | Should -Match '\$checks\.ToArray\(\)'
         $moduleSource | Should -Match '\$records\.ToArray\(\)'
     }
+
+    It 'atomically creates and replaces setup state under Windows PowerShell 5.1' {
+        $global:AdoSetupStatePath = Join-Path $TestDrive 'setup-state.json'
+        try {
+            InModuleScope AdoAgentClusterKey {
+                Write-AdoSetupState -Path $global:AdoSetupStatePath -State ([pscustomobject]@{ phase = 'Preflight'; sequence = 1 })
+                Write-AdoSetupState -Path $global:AdoSetupStatePath -State ([pscustomobject]@{ phase = 'PackageStaged'; sequence = 2 })
+
+                $saved = Get-Content -LiteralPath $global:AdoSetupStatePath -Raw | ConvertFrom-Json
+                $saved.phase | Should -Be 'PackageStaged'
+                $saved.sequence | Should -Be 2
+                $bytes = [IO.File]::ReadAllBytes($global:AdoSetupStatePath)
+                ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF) | Should -Be $false
+                $parent = Split-Path -Parent $global:AdoSetupStatePath
+                $leaf = Split-Path -Leaf $global:AdoSetupStatePath
+                @(
+                    Get-ChildItem -LiteralPath $parent -Force |
+                        Where-Object { $_.Name -like ($leaf + '.tmp.*') -or $_.Name -like ($leaf + '.bak.*') }
+                ).Count | Should -Be 0
+            }
+        }
+        finally {
+            Remove-Variable -Name AdoSetupStatePath -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'does not let failure-state persistence mask the original setup error' {
+        $source = Get-Content -LiteralPath $setupModulePath -Raw
+        $source | Should -Match '\$originalError = \$_'
+        $source | Should -Match 'Unable to persist sanitized setup failure metadata'
+        $source | Should -Match '\$PSCmdlet\.ThrowTerminatingError\(\$originalError\)'
+    }
 }
 
 Describe 'Agent package extraction security' {
