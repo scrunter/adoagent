@@ -165,12 +165,15 @@ function ConvertFrom-AdoClusterOwnerNodeList {
         throw 'Get-ClusterOwnerNode returned an unexpected result without an OwnerNodes property.'
     }
 
-    $names = foreach ($ownerNode in @($ownerNodesProperty.Value)) {
-        if ($null -eq $ownerNode) { continue }
-        $nameProperty = $ownerNode.PSObject.Properties['Name']
-        $name = if ($null -ne $nameProperty) { [string]$nameProperty.Value } else { [string]$ownerNode }
-        if (-not [string]::IsNullOrWhiteSpace($name)) { $name }
-    }
+    [string[]]$names = @(
+        foreach ($ownerNode in @($ownerNodesProperty.Value)) {
+            if ($null -eq $ownerNode) { continue }
+            $nameProperty = $ownerNode.PSObject.Properties['Name']
+            $candidate = if ($null -ne $nameProperty) { $nameProperty.Value } else { $ownerNode }
+            $name = [Convert]::ToString($candidate, [Globalization.CultureInfo]::InvariantCulture)
+            if (-not [string]::IsNullOrWhiteSpace($name)) { $name }
+        }
+    )
     return @($names | Sort-Object -Unique)
 }
 

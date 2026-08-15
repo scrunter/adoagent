@@ -61,12 +61,12 @@ $ownerNodeList = $disk | Get-ClusterOwnerNode
 if ($null -eq $ownerNodeList -or $null -eq $ownerNodeList.PSObject.Properties['OwnerNodes']) {
     throw "Get-ClusterOwnerNode returned an unexpected result for '$SharedDiskResourceName'."
 }
-$nodes = @(
+[string[]]$nodes = @(
     $ownerNodeList.OwnerNodes |
         ForEach-Object {
-            if ($_ -is [string]) { $_ }
-            elseif ($null -ne $_.PSObject.Properties['Name']) { [string]$_.Name }
-            else { [string]$_ }
+            $nameProperty = $_.PSObject.Properties['Name']
+            $candidate = if ($null -ne $nameProperty) { $nameProperty.Value } else { $_ }
+            [Convert]::ToString($candidate, [Globalization.CultureInfo]::InvariantCulture)
         } |
         Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
         Sort-Object -Unique
@@ -74,8 +74,13 @@ $nodes = @(
 if ($nodes.Count -eq 0) {
     throw "Shared disk resource '$SharedDiskResourceName' has no possible owner nodes."
 }
-foreach ($nodeName in $nodes) {
-    $clusterNode = Get-ClusterNode -Name $nodeName -ErrorAction Stop
+$clusterNodes = @(Get-ClusterNode -ErrorAction Stop)
+foreach ($nodeNameValue in $nodes) {
+    [string]$nodeName = $nodeNameValue
+    $clusterNode = $clusterNodes | Where-Object { [string]$_.Name -ieq $nodeName } | Select-Object -First 1
+    if ($null -eq $clusterNode) {
+        throw "Possible owner '$nodeName' was not returned by Get-ClusterNode."
+    }
     if ($clusterNode.State -ne 'Up') {
         throw "Possible owner '$nodeName' must be Up before installation."
     }

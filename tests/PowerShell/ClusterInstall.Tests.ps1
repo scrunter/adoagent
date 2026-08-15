@@ -26,11 +26,14 @@ Describe 'Full cluster-node installation entry point' {
         $source = Get-Content -LiteralPath $installScriptPath -Raw
         $source | Should -Match '\$disk \| Get-ClusterOwnerNode'
         $source | Should -Match '\$ownerNodeList\.OwnerNodes'
+        $source | Should -Match '\[string\[\]\]\$nodes'
+        $source | Should -Match '\[Convert\]::ToString'
         $source | Should -Not -Match 'Get-ClusterOwnerNode \| ForEach-Object \{ \$_\.Name \}'
         $source | Should -Match '\$disk\.State -ne ''Online'''
-        $source | Should -Match 'Get-ClusterNode -Name \$nodeName'
+        $source | Should -Match '\$clusterNodes = @\(Get-ClusterNode -ErrorAction Stop\)'
+        $source | Should -Not -Match 'Get-ClusterNode -Name'
         $source | Should -Match '\$clusterNode\.State -ne ''Up'''
-        $source | Should -Not -Match '\[string\[\]\]\$Node'
+        ($source -cmatch '\[string\[\]\]\$Node(?=\s*[,)=])') | Should -Be $false
     }
 
     It 'passes the complete owner set to the module installer and leaves the role Offline' {

@@ -170,7 +170,11 @@ Confirm every possible owner has a nonempty node-local sealed file without readi
 $owners = @(
     (Get-ClusterResource -Name $install.SharedDiskResourceName |
         Get-ClusterOwnerNode).OwnerNodes |
-        ForEach-Object { [string]$_ }
+        ForEach-Object {
+            $nameProperty = $_.PSObject.Properties['Name']
+            $candidate = if ($null -ne $nameProperty) { $nameProperty.Value } else { $_ }
+            [Convert]::ToString($candidate, [Globalization.CultureInfo]::InvariantCulture)
+        }
 )
 
 Invoke-Command -ComputerName $owners -ArgumentList $configId -ScriptBlock {
