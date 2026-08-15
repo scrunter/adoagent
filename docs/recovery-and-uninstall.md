@@ -20,7 +20,7 @@ Read `<EscrowPath>\<ConfigId>.setup.json` and use its `phase`, `lastFailurePhase
 
 Every setup failure defensively stops the locally discovered service and leaves existing cluster key/service resources Offline. Never work around failure by starting the service directly.
 
-When recovery requires a corrected toolkit release, run that release with the original ConfigId, original setup inputs, and `-Resume`. The verified toolkit package path is the only state binding permitted to change; setup persists the new path after confirmation. Do not copy new binaries over an older release directory merely to preserve its pathname.
+When recovery requires a corrected toolkit release, run that release with the original ConfigId, original setup inputs, and `-Resume`. The verified toolkit package path may be rebound and setup persists the new path after confirmation. Before any escrow envelope, manifest, or rollback artifact exists, an invalid protector-group name may also be corrected to a validated domain security group in the current logon token. After key artifacts exist, the protector binding is immutable. Do not copy new binaries over an older release directory merely to preserve its pathname.
 
 ## Selector will not come online
 

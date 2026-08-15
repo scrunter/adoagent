@@ -668,6 +668,39 @@ function Test-AdoSetupToolkitPathOnlyChange {
     return (Get-AdoObjectSha256 -InputObject $savedCopy) -eq (Get-AdoObjectSha256 -InputObject $requestedCopy)
 }
 
+function Test-AdoSetupPermittedResumeChange {
+    param(
+        [Parameter(Mandatory = $true)]$SavedImmutable,
+        [Parameter(Mandatory = $true)]$RequestedImmutable,
+        [switch]$AllowProtectorGroupChange
+    )
+    $savedCopy = $SavedImmutable | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    $requestedCopy = $RequestedImmutable | ConvertTo-Json -Depth 10 | ConvertFrom-Json
+    foreach ($property in @('toolkitPackagePath', 'protectorGroup')) {
+        if ($savedCopy.PSObject.Properties.Name -notcontains $property -or
+            $requestedCopy.PSObject.Properties.Name -notcontains $property) {
+            return $false
+        }
+    }
+    $savedCopy.toolkitPackagePath = [string]$requestedCopy.toolkitPackagePath
+    if ($AllowProtectorGroupChange) {
+        $savedCopy.protectorGroup = [string]$requestedCopy.protectorGroup
+    }
+    return (Get-AdoObjectSha256 -InputObject $savedCopy) -eq (Get-AdoObjectSha256 -InputObject $requestedCopy)
+}
+
+function Test-AdoSetupKeyArtifactsExist {
+    param(
+        [Parameter(Mandatory = $true)][string]$EscrowPath,
+        [Parameter(Mandatory = $true)][Guid]$ConfigId
+    )
+    $stem = $ConfigId.ToString('D')
+    foreach ($suffix in @('.envelope.bin', '.manifest.json', '.rollback.json')) {
+        if (Test-Path -LiteralPath (Join-Path $EscrowPath ($stem + $suffix)) -PathType Leaf) { return $true }
+    }
+    return $false
+}
+
 function Write-AdoSetupState {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)]$State)
     $operationId = [Guid]::NewGuid().ToString('N')
@@ -805,6 +838,8 @@ function Initialize-AdoAgentCluster {
     Assert-AdoNoReparsePoint -Path $resolvedEscrow
     Assert-AdoNoReparsePoint -Path $resolvedToolkit
     Test-AdoReleasePackage -PackagePath $resolvedToolkit | Out-Null
+    try { Get-AdoProtectorGroupValidation -Identity $ProtectorGroup | Out-Null }
+    catch { throw "ProtectorGroup prerequisite failed. $($_.Exception.Message)" }
     if ([string]::IsNullOrWhiteSpace($AgentPackagePath) -ne [string]::IsNullOrWhiteSpace($AgentPackageSha256)) {
         throw 'AgentPackagePath and AgentPackageSha256 must be supplied together.'
     }
@@ -844,11 +879,19 @@ function Initialize-AdoAgentCluster {
     $immutable = Get-AdoSetupImmutableData -Bound $bound
     $immutableHash = Get-AdoObjectSha256 -InputObject $immutable
     $rebindToolkitPackage = $false
+    $rebindProtectorGroup = $false
     if ($null -ne $state -and [string]$state.immutableSha256 -ne $immutableHash) {
-        if (-not $Resume -or -not (Test-AdoSetupToolkitPathOnlyChange -SavedImmutable $state.immutable -RequestedImmutable $immutable)) {
+        $protectorChanged = [string]$state.immutable.protectorGroup -cne [string]$immutable.protectorGroup
+        $keyArtifactsExist = Test-AdoSetupKeyArtifactsExist -EscrowPath $resolvedEscrow -ConfigId $ConfigId
+        $allowProtectorGroupChange = $phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled') -and -not $keyArtifactsExist
+        if (-not $Resume -or -not (Test-AdoSetupPermittedResumeChange -SavedImmutable $state.immutable -RequestedImmutable $immutable -AllowProtectorGroupChange:$allowProtectorGroupChange)) {
+            if ($protectorChanged -and $keyArtifactsExist) {
+                throw 'ProtectorGroup cannot change because escrow or rollback key artifacts already exist for this ConfigId.'
+            }
             throw 'Resume inputs do not match the immutable setup state.'
         }
-        $rebindToolkitPackage = $true
+        $rebindToolkitPackage = [string]$state.immutable.toolkitPackagePath -cne [string]$immutable.toolkitPackagePath
+        $rebindProtectorGroup = $protectorChanged
     }
     $registrationSecret = $null
     $pool = $null
@@ -881,8 +924,8 @@ function Initialize-AdoAgentCluster {
         if (-not $PSCmdlet.ShouldProcess($ClusterRoleName, "download, register, and cluster Azure DevOps agent '$AgentName' as ConfigId $ConfigId")) {
             return [pscustomobject]@{ ConfigId = $ConfigId; Planned = $true; StatePath = $statePath; Nodes = $Node; AgentRoot = $resolvedAgentRoot }
         }
-        if ($rebindToolkitPackage) {
-            $currentOperation = 'RebindToolkitPackage'
+        if ($rebindToolkitPackage -or $rebindProtectorGroup) {
+            $currentOperation = if ($rebindProtectorGroup) { 'RebindProtectorGroup' } else { 'RebindToolkitPackage' }
             $state.immutable = $immutable
             $state.immutableSha256 = $immutableHash
             $state.updatedUtc = [DateTime]::UtcNow.ToString('o')

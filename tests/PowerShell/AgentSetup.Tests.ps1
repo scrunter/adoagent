@@ -34,13 +34,14 @@ Describe 'Deployment-authenticated agent setup contract' {
         $source | Should -Not -Match 'servicePassword\s*='
     }
 
-    It 'allows only a verified toolkit path to change during resume' {
+    It 'allows a verified toolkit path and only a pre-escrow protector correction during resume' {
         InModuleScope AdoAgentClusterKey {
             $saved = [ordered]@{
                 schemaVersion = 1
                 configId = '11111111-2222-3333-4444-555555555555'
                 agentRoot = 'K:\adoagent'
                 node = @('node-a', 'node-b')
+                protectorGroup = 'test'
                 toolkitPackagePath = 'C:\Toolkit\0.4.6'
                 serviceAccount = 'NT AUTHORITY\NETWORK SERVICE'
             }
@@ -49,16 +50,41 @@ Describe 'Deployment-authenticated agent setup contract' {
                 configId = '11111111-2222-3333-4444-555555555555'
                 agentRoot = 'K:\adoagent'
                 node = @('node-a', 'node-b')
+                protectorGroup = 'test'
                 toolkitPackagePath = 'C:\Toolkit\0.4.7'
                 serviceAccount = 'NT AUTHORITY\NETWORK SERVICE'
             }
             (Test-AdoSetupToolkitPathOnlyChange -SavedImmutable $saved -RequestedImmutable $requested) | Should -Be $true
+            (Test-AdoSetupPermittedResumeChange -SavedImmutable $saved -RequestedImmutable $requested) | Should -Be $true
+            $requested.protectorGroup = 'CONTOSO\AdoAgentKeyRecoveryOperators'
+            (Test-AdoSetupPermittedResumeChange -SavedImmutable $saved -RequestedImmutable $requested) | Should -Be $false
+            (Test-AdoSetupPermittedResumeChange -SavedImmutable $saved -RequestedImmutable $requested -AllowProtectorGroupChange) | Should -Be $true
             $requested.agentRoot = 'K:\different-agent'
-            (Test-AdoSetupToolkitPathOnlyChange -SavedImmutable $saved -RequestedImmutable $requested) | Should -Be $false
+            (Test-AdoSetupPermittedResumeChange -SavedImmutable $saved -RequestedImmutable $requested -AllowProtectorGroupChange) | Should -Be $false
         }
 
         $source = Get-Content -LiteralPath $setupModulePath -Raw
-        $source.IndexOf('if ($rebindToolkitPackage)') | Should -BeGreaterThan $source.IndexOf('if (-not $PSCmdlet.ShouldProcess')
+        $source.IndexOf('if ($rebindToolkitPackage -or $rebindProtectorGroup)') | Should -BeGreaterThan $source.IndexOf('if (-not $PSCmdlet.ShouldProcess')
+        $source | Should -Match 'Test-AdoSetupKeyArtifactsExist'
+        $source | Should -Match 'RebindProtectorGroup'
+    }
+
+    It 'reports protector resolution, group type, and logon membership separately' {
+        $moduleSource = Get-Content -LiteralPath (Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.psm1') -Raw
+        $moduleSource | Should -Match "Add-Check 'ProtectorSid'"
+        $moduleSource | Should -Match "Add-Check 'ProtectorSecurityGroup'"
+        $moduleSource | Should -Match "Add-Check 'ProvisioningIdentity'"
+        $moduleSource | Should -Match 'sign out and sign back in'
+    }
+
+    It 'blocks protector rebinding when any key artifact already exists' {
+        $global:AdoSetupArtifactPath = $TestDrive
+        InModuleScope AdoAgentClusterKey {
+            $configId = [Guid]'11111111-2222-3333-4444-555555555555'
+            (Test-AdoSetupKeyArtifactsExist -EscrowPath $global:AdoSetupArtifactPath -ConfigId $configId) | Should -Be $false
+            Set-Content -LiteralPath (Join-Path $global:AdoSetupArtifactPath ($configId.ToString('D') + '.rollback.json')) -Value '{}'
+            (Test-AdoSetupKeyArtifactsExist -EscrowPath $global:AdoSetupArtifactPath -ConfigId $configId) | Should -Be $true
+        }
     }
 
     It 'uses child environment variables and never puts credentials in config.cmd arguments' {
