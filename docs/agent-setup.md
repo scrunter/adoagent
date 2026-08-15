@@ -125,7 +125,7 @@ After registration, setup:
 
 ## Resume state
 
-The nonsecret state is `<EscrowPath>\<ConfigId>.setup.json`. It contains immutable target metadata, package version/hash, pool/agent/service IDs, timestamps, the last completed phase, and a sanitized failure phase. It never contains a token, password, agent RSA value, protected blob, or envelope content.
+The nonsecret state is `<EscrowPath>\<ConfigId>.setup.json`. It contains immutable target metadata, package version/hash, pool/agent/service IDs, timestamps, the last completed phase, and sanitized failure phase/operation identifiers. It never contains a token, password, agent RSA value, protected blob, or envelope content.
 
 Phases are:
 

@@ -89,11 +89,12 @@ Path: `<EscrowPath>\<ConfigId>.setup.json`
   "agentId": "<agent-id>",
   "serviceName": "<service-name>",
   "registrationOfflineVerified": true,
-  "lastFailurePhase": null
+  "lastFailurePhase": null,
+  "lastFailureOperation": null
 }
 ```
 
-The immutable object also records the offline package choice and insecure-URL switch. It contains no token, password, RSA data, protected blob, or envelope content. Valid phases are `Preflight`, `PackageStaged`, `RegisteredStopped`, `KeyValidated`, `ClusterInstalled`, and `Complete`.
+The immutable object also records the offline package choice and insecure-URL switch. It contains no token, password, RSA data, protected blob, or envelope content. Valid phases are `Preflight`, `PackageStaged`, `RegisteredStopped`, `KeyValidated`, `ClusterInstalled`, and `Complete`. On failure, `lastFailureOperation` records the sanitized operation identifier also shown in the terminating error, such as `ExtractAgentPackage` or `InstallClusterResources`.
 
 ## Helper CLI
 

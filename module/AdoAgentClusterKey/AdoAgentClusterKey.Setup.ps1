@@ -132,8 +132,10 @@ function Assert-AdoNoReparsePoint {
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
             throw "Path '$Path' contains a reparse point."
         }
-        $parent = Split-Path -Parent $candidate
-        if ($parent -eq $candidate) { break }
+        $root = [IO.Path]::GetPathRoot($candidate)
+        if ($candidate.TrimEnd('\') -eq $root.TrimEnd('\')) { break }
+        $parent = [IO.Path]::GetDirectoryName($candidate.TrimEnd('\'))
+        if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $candidate) { break }
         $candidate = $parent
     }
 }
@@ -688,6 +690,7 @@ function New-AdoSetupState {
         serviceName = $null
         registrationOfflineVerified = $false
         lastFailurePhase = $null
+        lastFailureOperation = $null
     }
 }
 
@@ -697,6 +700,10 @@ function Set-AdoSetupPhase {
     $State.phase = $Phase
     $State.updatedUtc = [DateTime]::UtcNow.ToString('o')
     $State.lastFailurePhase = $null
+    if ($null -eq $State.PSObject.Properties['lastFailureOperation']) {
+        $State | Add-Member -NotePropertyName lastFailureOperation -NotePropertyValue $null
+    }
+    else { $State.lastFailureOperation = $null }
     Write-AdoSetupState -Path $StatePath -State $State
 }
 
@@ -827,16 +834,20 @@ function Initialize-AdoAgentCluster {
     $packageMetadata = $null
     $existingAgent = $null
     $serviceNameForFailure = if ($null -ne $state) { [string]$state.serviceName } else { $null }
+    $currentOperation = 'Authorization'
     try {
         $needsAuthorization = $phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'RegisteredStopped') -or ($null -ne $state -and -not [bool]$state.registrationOfflineVerified)
         if ($needsAuthorization -and $RegistrationAuth -in @('OAuthToken', 'PersonalAccessToken')) {
             $registrationSecret = Get-AdoRegistrationSecret -RegistrationToken $RegistrationToken -RegistrationTokenEnvironmentVariableName $RegistrationTokenEnvironmentVariableName -PreserveEnvironmentVariable:$WhatIfPreference
         }
         if ($needsAuthorization) {
+            $currentOperation = 'ValidatePoolAuthorization'
             $pool = Get-AdoManagedAgentPool -BaseUri $baseUri -PoolName $PoolName -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationSecret $registrationSecret -RegistrationCredential $RegistrationCredential -AllowInsecureServerUrl:$AllowInsecureServerUrl
             if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'PackageStaged') -and -not $AgentPackagePath) {
+                $currentOperation = 'SelectAgentPackage'
                 $packageMetadata = Get-AdoAgentPackageMetadata -BaseUri $baseUri -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationSecret $registrationSecret -RegistrationCredential $RegistrationCredential -AllowInsecureServerUrl:$AllowInsecureServerUrl
             }
+            $currentOperation = 'CheckExistingAgent'
             $existingAgent = Get-AdoExistingAgent -BaseUri $baseUri -PoolId ([int]$pool.id) -AgentName $AgentName -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationSecret $registrationSecret -RegistrationCredential $RegistrationCredential -AllowInsecureServerUrl:$AllowInsecureServerUrl
             $canResumeLocalRegistration = $Resume -and (Get-AdoAgentRegistrationState -AgentRoot $resolvedAgentRoot) -eq 'Registered'
             if ($null -ne $existingAgent -and $phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'RegisteredStopped') -and [string]$existingAgent.status -ne 'offline') {
@@ -850,11 +861,13 @@ function Initialize-AdoAgentCluster {
             return [pscustomobject]@{ ConfigId = $ConfigId; Planned = $true; StatePath = $statePath; Nodes = $Node; AgentRoot = $resolvedAgentRoot }
         }
         if ($null -eq $state) {
+            $currentOperation = 'CreateSetupState'
             $state = New-AdoSetupState -Immutable $immutable -Hash $immutableHash
             if ($null -ne $pool) { $state.poolId = [int]$pool.id }
             Write-AdoSetupState -Path $statePath -State $state
             $phaseIndex = Get-AdoSetupPhaseIndex -Phase 'Preflight'
         }
+        $currentOperation = 'InspectAgentRoot'
         $rootState = Get-AdoAgentRegistrationState -AgentRoot $resolvedAgentRoot
         if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'PackageStaged')) {
             if ($rootState -eq 'Partial') { throw 'AgentRoot contains a partial package or registration. Preserve it and follow the documented explicit recovery procedure.' }
@@ -870,6 +883,7 @@ function Initialize-AdoAgentCluster {
             $deleteArchive = $false
             try {
                 if ($AgentPackagePath) {
+                    $currentOperation = 'ValidateOfflinePackage'
                     $archivePath = $bound.AgentPackagePath
                     $actualHash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
                     if ($actualHash -ne $bound.AgentPackageSha256) { throw 'Offline agent-package SHA-256 does not match AgentPackageSha256.' }
@@ -881,20 +895,25 @@ function Initialize-AdoAgentCluster {
                     if ($null -eq $packageMetadata) { throw 'Compatible agent-package metadata is unavailable.' }
                     $archivePath = Join-Path ([IO.Path]::GetTempPath()) ('ado-agent-' + [Guid]::NewGuid().ToString('N') + '.zip')
                     $deleteArchive = $true
+                    $currentOperation = 'DownloadAgentPackage'
                     $download = Invoke-AdoHttpGet -Uri $packageMetadata.DownloadUri -BaseUri $baseUri -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationSecret $registrationSecret -RegistrationCredential $RegistrationCredential -OutputPath $archivePath -AllowInsecureServerUrl:$AllowInsecureServerUrl -PackageDownload
                     $state.packageVersion = $packageMetadata.Version
                     $state.packageDownloadUrl = $download.Uri.GetLeftPart([UriPartial]::Path)
                     $state.packageSha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash
                 }
                 $state.updatedUtc = [DateTime]::UtcNow.ToString('o')
+                $currentOperation = 'PersistPackageMetadata'
                 Write-AdoSetupState -Path $statePath -State $state
+                $currentOperation = 'ExtractAgentPackage'
                 Expand-AdoAgentArchive -ArchivePath $archivePath -AgentRoot $resolvedAgentRoot
             }
             finally { if ($deleteArchive -and $archivePath -and (Test-Path -LiteralPath $archivePath)) { Remove-Item -LiteralPath $archivePath -Force } }
+            $currentOperation = 'PersistPackageStaged'
             Set-AdoSetupPhase -State $state -Phase 'PackageStaged' -StatePath $statePath
             $phaseIndex = Get-AdoSetupPhaseIndex -Phase 'PackageStaged'
             }
         }
+        $currentOperation = 'InspectRegistrationState'
         $rootState = Get-AdoAgentRegistrationState -AgentRoot $resolvedAgentRoot
         if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'RegisteredStopped')) {
             if ($rootState -eq 'Partial') { throw 'AgentRoot contains a partial registration. Preserve it and follow the documented explicit recovery procedure.' }
@@ -902,16 +921,20 @@ function Initialize-AdoAgentCluster {
                 if (-not $Resume) { throw 'AgentRoot is already registered. Use the existing-agent migration path or resume its recorded setup.' }
             }
             elseif ($rootState -eq 'PackageStaged') {
+                $currentOperation = 'ConfigureAgent'
                 Invoke-AdoAgentConfiguration -AgentRoot $resolvedAgentRoot -BaseUri $baseUri -PoolName $PoolName -AgentName $AgentName -WorkDirectory $WorkDirectory -RegistrationAuth $RegistrationAuth -RegistrationSecret $registrationSecret -RegistrationCredential $RegistrationCredential -ServiceAccount $ServiceAccount -ServiceCredential $ServiceCredential -ReplaceExistingAgent:$ReplaceExistingAgent
             }
             else { throw 'AgentRoot does not contain the expected staged Microsoft agent package.' }
+            $currentOperation = 'ValidateRegisteredAgent'
             $metadata = Get-AdoSetupAgentMetadata -AgentRoot $resolvedAgentRoot
             if (-not $metadata.Name.Equals($AgentName, [StringComparison]::Ordinal)) { throw 'The configured agent name does not match AgentName.' }
             if ($null -ne $existingAgent -and $null -ne $existingAgent.PSObject.Properties['id'] -and [string]$existingAgent.id -ne $metadata.Id) {
                 throw 'The local resumed registration does not match the exact server-side agent ID.'
             }
+            $currentOperation = 'DiscoverAgentService'
             $definition = Get-AdoAgentServiceDefinition -AgentRoot $resolvedAgentRoot
             $serviceNameForFailure = $definition.Name
+            $currentOperation = 'StopAgentService'
             Set-AdoSetupServiceStopped -ServiceName $definition.Name
             $state.agentId = $metadata.Id
             $state.serviceName = $definition.Name
@@ -922,14 +945,17 @@ function Initialize-AdoAgentCluster {
         }
         if (-not [bool]$state.registrationOfflineVerified) {
             if ($null -eq $pool) { throw 'A registration credential is required to verify that the newly registered agent remained Offline.' }
+            $currentOperation = 'VerifyAgentOffline'
             Test-AdoAgentOffline -BaseUri $baseUri -PoolId ([int]$state.poolId) -AgentName $AgentName -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationSecret $registrationSecret -RegistrationCredential $RegistrationCredential -AllowInsecureServerUrl:$AllowInsecureServerUrl | Out-Null
             $state.registrationOfflineVerified = $true
             $state.updatedUtc = [DateTime]::UtcNow.ToString('o')
             Write-AdoSetupState -Path $statePath -State $state
         }
         if ((Get-AdoAgentRegistrationState -AgentRoot $resolvedAgentRoot) -ne 'Registered') { throw 'The stopped agent registration is incomplete.' }
+        $currentOperation = 'StopAgentService'
         Set-AdoSetupServiceStopped -ServiceName ([string]$state.serviceName)
         if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'KeyValidated')) {
+            $currentOperation = 'InspectAgentKey'
             $inspection = Invoke-AdoKeyHelper -Executable (Join-Path $resolvedToolkit 'AdoAgent.ClusterKey.exe') -Arguments @('inspect', '--agent-root', $resolvedAgentRoot, '--json')
             if ($inspection.data.keyStorage -ne 'file') { throw 'The new agent uses a named key container; file-backed RSA is required.' }
             if (@($inspection.data.additionalCredentialStores).Count -gt 0) { throw 'The new agent created an unsupported additional protected credential store.' }
@@ -938,12 +964,15 @@ function Initialize-AdoAgentCluster {
             $phaseIndex = Get-AdoSetupPhaseIndex -Phase 'KeyValidated'
         }
         if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled')) {
+            $currentOperation = 'ValidateClusterPrerequisites'
             Test-AdoAgentClusterPrerequisite -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -Node $Node -PackagePath $resolvedToolkit -ServiceIdentity $ServiceAccount -WorkDirectory $WorkDirectory -ThrowOnFailure | Out-Null
+            $currentOperation = 'InstallClusterResources'
             Install-AdoAgentCluster -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -EscrowPath $resolvedEscrow -PackagePath $resolvedToolkit -ConfirmAgentIdle -Node $Node -ConfigId $ConfigId -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -ServiceCredential $ServiceCredential -Confirm:$false | Out-Null
             Set-AdoSetupPhase -State $state -Phase 'ClusterInstalled' -StatePath $statePath
             $phaseIndex = Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled'
         }
         if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'Complete')) {
+            $currentOperation = 'OfflineClusterRole'
             Stop-ClusterGroup -Name $ClusterRoleName -Wait 60 | Out-Null
             $group = Get-ClusterGroup -Name $ClusterRoleName
             if ($group.State -ne 'Offline') { throw 'The clustered role did not reach Offline after setup.' }
@@ -966,11 +995,18 @@ function Initialize-AdoAgentCluster {
         if (-not [string]::IsNullOrWhiteSpace($serviceNameForFailure)) { Stop-Service -Name $serviceNameForFailure -Force -ErrorAction SilentlyContinue }
         if ($null -ne $state -and (Test-Path -LiteralPath $statePath)) {
             $state.lastFailurePhase = [string]$state.phase
+            if ($null -eq $state.PSObject.Properties['lastFailureOperation']) {
+                $state | Add-Member -NotePropertyName lastFailureOperation -NotePropertyValue $currentOperation
+            }
+            else { $state.lastFailureOperation = $currentOperation }
             $state.updatedUtc = [DateTime]::UtcNow.ToString('o')
             try { Write-AdoSetupState -Path $statePath -State $state }
             catch { Write-Warning 'Unable to persist sanitized setup failure metadata; the original setup error follows.' }
         }
-        $PSCmdlet.ThrowTerminatingError($originalError)
+        $message = "Setup failed during '$currentOperation'. $($originalError.Exception.Message)"
+        $exception = [InvalidOperationException]::new($message, $originalError.Exception)
+        $errorRecord = [Management.Automation.ErrorRecord]::new($exception, "AdoAgentClusterSetup.$currentOperation", [Management.Automation.ErrorCategory]::InvalidOperation, $null)
+        $PSCmdlet.ThrowTerminatingError($errorRecord)
     }
     finally { $registrationSecret = $null }
 }

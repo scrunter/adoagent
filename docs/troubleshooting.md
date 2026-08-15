@@ -2,7 +2,7 @@
 
 All helper messages are sanitized. Capture `--json`, exit code, ConfigId, owner node, and resource state. Do not attach agent credential files or node/escrow blobs.
 
-For new-agent bootstrap failures, also record the nonsecret setup phase, package version/hash, registration mode, pool/agent names, and whether `registrationOfflineVerified` is true. Never capture the registration-token environment value or a process environment dump.
+For new-agent bootstrap failures, also record the nonsecret `phase`, `lastFailurePhase`, `lastFailureOperation`, package version/hash, registration mode, pool/agent names, and whether `registrationOfflineVerified` is true. The terminating error includes the same sanitized operation as `AdoAgentClusterSetup.<operation>`. Never capture the registration-token environment value or a process environment dump.
 
 ## Setup failures
 
