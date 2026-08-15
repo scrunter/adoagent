@@ -6,6 +6,7 @@ BeforeAll {
     $setupModulePath = Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.Setup.ps1'
     $setupScriptPath = Join-Path $repositoryRoot 'setup\Initialize-AdoAgentCluster.ps1'
     $installScriptPath = Join-Path $repositoryRoot 'setup\Install-AdoAgentCluster.ps1'
+    $resetScriptPath = Join-Path $repositoryRoot 'setup\Reset-AdoAgentCluster.ps1'
     $vbsPath = Join-Path $repositoryRoot 'cluster\AdoAgentClusterKey.vbs'
     $buildPath = Join-Path $repositoryRoot 'build\Build.ps1'
     $releaseVerifierPath = Join-Path $repositoryRoot 'build\Test-Release.ps1'
@@ -20,12 +21,13 @@ Describe 'AdoAgentClusterKey module contract' {
         @($parseErrors).Count | Should -Be 0
     }
 
-    It 'exports all eight documented commands' {
+    It 'exports all nine documented commands' {
         Import-Module $manifestPath -Force
         $expected = @(
             'Initialize-AdoAgentCluster',
             'Test-AdoAgentClusterPrerequisite', 'Install-AdoAgentCluster', 'Add-AdoAgentClusterNode',
             'Repair-AdoAgentCluster', 'Remove-AdoAgentClusterNode', 'Uninstall-AdoAgentCluster',
+            'Reset-AdoAgentCluster',
             'Invoke-AdoAgentClusterEvaluation'
         )
         $actual = @(Get-Command -Module AdoAgentClusterKey | Select-Object -ExpandProperty Name)
@@ -34,13 +36,13 @@ Describe 'AdoAgentClusterKey module contract' {
 
     It 'uses ShouldProcess for every mutating public command' {
         Import-Module $manifestPath -Force
-        foreach ($name in @('Initialize-AdoAgentCluster', 'Install-AdoAgentCluster', 'Add-AdoAgentClusterNode', 'Repair-AdoAgentCluster', 'Remove-AdoAgentClusterNode', 'Uninstall-AdoAgentCluster', 'Invoke-AdoAgentClusterEvaluation')) {
+        foreach ($name in @('Initialize-AdoAgentCluster', 'Install-AdoAgentCluster', 'Add-AdoAgentClusterNode', 'Repair-AdoAgentCluster', 'Remove-AdoAgentClusterNode', 'Uninstall-AdoAgentCluster', 'Reset-AdoAgentCluster', 'Invoke-AdoAgentClusterEvaluation')) {
             ((Get-Command $name).Parameters.Keys -contains 'WhatIf') | Should -Be $true
         }
     }
 
     It 'parses the setup implementation and entry script' {
-        foreach ($path in @($setupModulePath, $setupScriptPath, $installScriptPath)) {
+        foreach ($path in @($setupModulePath, $setupScriptPath, $installScriptPath, $resetScriptPath)) {
             $parseErrors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$parseErrors) | Out-Null
             @($parseErrors).Count | Should -Be 0
@@ -63,6 +65,22 @@ Describe 'AdoAgentClusterKey module contract' {
         $source | Should -Match 'PreserveExisting'
         $source | Should -Match 'Existing ConfigId artifacts do not match'
         $source | Should -Match 'writeRollbackSnapshot'
+    }
+
+    It 'repairs derived runtime paths while preserving matching sealed key material' {
+        $source = Get-Content -LiteralPath $modulePath -Raw
+        $repairStart = $source.IndexOf('function Set-AdoPreservedNodeConfiguration')
+        $repairEnd = $source.IndexOf('function Set-AdoNodeKeyMaterial')
+        $repairSource = $source.Substring($repairStart, $repairEnd - $repairStart)
+        $repairCommandStart = $source.IndexOf('function Repair-AdoAgentCluster')
+        $repairCommandEnd = $source.IndexOf('function Remove-AdoAgentClusterNode')
+        $repairCommandSource = $source.Substring($repairCommandStart, $repairCommandEnd - $repairCommandStart)
+
+        $repairSource | Should -Match 'activeKeyPath\s*=\s*\[IO\.Path\]::Combine'
+        $repairSource | Should -Match '\$configuration\s*\|\s*ConvertTo-Json'
+        $repairSource | Should -Not -Match '\$existing\s*\|\s*ConvertTo-Json'
+        $repairSource | Should -Match 'expectedPublicKeySha256'
+        $repairCommandSource | Should -Match 'else\s*\{\s*Set-AdoPreservedNodeConfiguration'
     }
 
     It 'passes an explicit quoted empty recovery-action value to sc.exe' {
@@ -221,7 +239,7 @@ Describe 'Package integrity policy' {
     It 'accepts an unsigned package when all required files are present' {
         $global:AdoPackageTestPath = Join-Path $TestDrive 'complete-package'
         New-Item -ItemType Directory -Path $global:AdoPackageTestPath | Out-Null
-        foreach ($name in @('AdoAgent.ClusterKey.exe','AdoAgentClusterKey.vbs','AdoAgentClusterKey.psm1','AdoAgentClusterKey.psd1','AdoAgentClusterKey.Setup.ps1','Install-AdoAgentCluster.ps1','Initialize-AdoAgentCluster.ps1')) {
+        foreach ($name in @('AdoAgent.ClusterKey.exe','AdoAgentClusterKey.vbs','AdoAgentClusterKey.psm1','AdoAgentClusterKey.psd1','AdoAgentClusterKey.Setup.ps1','Install-AdoAgentCluster.ps1','Initialize-AdoAgentCluster.ps1','Reset-AdoAgentCluster.ps1')) {
             Set-Content -LiteralPath (Join-Path $global:AdoPackageTestPath $name) -Value 'unsigned-test-file'
         }
         InModuleScope AdoAgentClusterKey {

@@ -69,7 +69,8 @@ function Get-AdoPackageFiles {
         'AdoAgentClusterKey.psd1',
         'AdoAgentClusterKey.Setup.ps1',
         'Install-AdoAgentCluster.ps1',
-        'Initialize-AdoAgentCluster.ps1'
+        'Initialize-AdoAgentCluster.ps1',
+        'Reset-AdoAgentCluster.ps1'
     )
     foreach ($name in $required) {
         $path = Join-Path $PackagePath $name
@@ -401,6 +402,65 @@ function Test-AdoNodeKeyMaterialPresent {
     return [bool](Invoke-Command -ComputerName $Node -ScriptBlock $check -ArgumentList $ConfigId.ToString('D'), $ConfigRoot)
 }
 
+function Set-AdoPreservedNodeConfiguration {
+    param(
+        [Parameter(Mandatory = $true)][string]$Node,
+        [Parameter(Mandatory = $true)][Guid]$ConfigId,
+        [Parameter(Mandatory = $true)]$Inspection,
+        [Parameter(Mandatory = $true)][string]$ResourceName,
+        [Parameter(Mandatory = $true)][string]$AgentRoot,
+        [Parameter(Mandatory = $true)][string]$RollbackJson
+    )
+    $writeConfiguration = {
+        param($configId, $resourceName, $agentRoot, $inspectionData, $rollback)
+        $configDirectory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $configId
+        $sealedPath = Join-Path $configDirectory 'sealed.credentials_rsaparams'
+        $configPath = Join-Path $configDirectory 'config.json'
+        $sealedItem = Get-Item -LiteralPath $sealedPath -Force -ErrorAction SilentlyContinue
+        if ($null -eq $sealedItem -or $sealedItem.PSIsContainer -or $sealedItem.Length -eq 0 -or
+            -not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+            throw "Matching node-sealed key material is incomplete on '$env:COMPUTERNAME'."
+        }
+
+        $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+        $same = [string]$existing.configId -eq $configId -and
+            [string]$existing.resourceName -eq $resourceName -and
+            [string]$existing.agentRoot -eq $agentRoot -and
+            [string]$existing.expectedAgentId -eq [string]$inspectionData.agentId -and
+            [string]$existing.expectedPublicKeySha256 -eq [string]$inspectionData.publicKeySha256
+        if (-not $same) { throw "Existing ConfigId artifacts do not match the requested installation on '$env:COMPUTERNAME'." }
+
+        # Preserve only the sealed ciphertext. Regenerate every derived runtime
+        # field so malformed paths from older releases cannot survive repair.
+        $configuration = [ordered]@{
+            schemaVersion = 1
+            configId = $configId
+            resourceName = $resourceName
+            agentRoot = $agentRoot
+            activeKeyPath = [IO.Path]::Combine($agentRoot, '.credentials_rsaparams')
+            sealedKeyPath = $sealedPath
+            expectedAgentId = [string]$inspectionData.agentId
+            expectedPublicKeySha256 = [string]$inspectionData.publicKeySha256
+            targetFileSddl = [string]$inspectionData.targetFileSddl
+        }
+        $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
+        [IO.File]::WriteAllText($configPath, ($configuration | ConvertTo-Json -Depth 5), $utf8WithoutBom)
+        $rollbackPath = Join-Path $configDirectory 'rollback.json'
+        if (-not (Test-Path -LiteralPath $rollbackPath -PathType Leaf)) {
+            [IO.File]::WriteAllText($rollbackPath, $rollback, $utf8WithoutBom)
+        }
+        & icacls.exe $configDirectory '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
+        if ($LASTEXITCODE -ne 0) { throw "Unable to protect the ConfigId directory ACL on '$env:COMPUTERNAME'." }
+    }
+
+    $arguments = @($ConfigId.ToString('D'), $ResourceName, $AgentRoot, $Inspection.data, $RollbackJson)
+    if (Test-AdoNodeIsLocal -Node $Node) {
+        & $writeConfiguration @arguments
+        return
+    }
+    Invoke-Command -ComputerName $Node -ScriptBlock $writeConfiguration -ArgumentList $arguments
+}
+
 function Set-AdoNodeKeyMaterial {
     param(
         [Parameter(Mandatory = $true)][string]$Node,
@@ -417,33 +477,33 @@ function Set-AdoNodeKeyMaterial {
     $session = $null
     $temporary = $null
     $localExecution = Test-AdoNodeIsLocal -Node $Node
+    if ($PreserveExisting -and (Test-AdoNodeKeyMaterialPresent -Node $Node -ConfigId $ConfigId)) {
+        Set-AdoPreservedNodeConfiguration -Node $Node -ConfigId $ConfigId -Inspection $Inspection -ResourceName $ResourceName -AgentRoot $AgentRoot -RollbackJson $RollbackJson
+        return
+    }
     $configureNode = {
-        param($configId, $temporaryPath, $resourceName, $agentRoot, $inspectionData, $rollback, $preserveExisting, $isLocalExecution, $credential)
+        param($configId, $temporaryPath, $resourceName, $agentRoot, $inspectionData, $rollback, $isLocalExecution, $credential)
         $configDirectory = Join-Path 'C:\ProgramData\AdoAgentClusterKey' $configId
         New-Item -ItemType Directory -Path $configDirectory -Force | Out-Null
         $sealedPath = Join-Path $configDirectory 'sealed.credentials_rsaparams'
         $configPath = Join-Path $configDirectory 'config.json'
-        if ($preserveExisting -and (Test-Path -LiteralPath $sealedPath -PathType Leaf) -and (Test-Path -LiteralPath $configPath -PathType Leaf)) {
-            $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
-            $same = [string]$existing.configId -eq $configId -and
-                [string]$existing.resourceName -eq $resourceName -and
-                [string]$existing.agentRoot -eq $agentRoot -and
-                [string]$existing.expectedAgentId -eq [string]$inspectionData.agentId -and
-                [string]$existing.expectedPublicKeySha256 -eq [string]$inspectionData.publicKeySha256
-            if (-not $same) { throw "Existing ConfigId artifacts do not match the requested installation on '$env:COMPUTERNAME'." }
-            $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
-            $existing.PSObject.Properties.Remove('publisherThumbprint')
-            $existing.PSObject.Properties.Remove('allowUnsigned')
-            [IO.File]::WriteAllText($configPath, ($existing | ConvertTo-Json -Depth 5), $utf8WithoutBom)
-            $rollbackPath = Join-Path $configDirectory 'rollback.json'
-            if (-not (Test-Path -LiteralPath $rollbackPath -PathType Leaf)) { [IO.File]::WriteAllText($rollbackPath, $rollback, $utf8WithoutBom) }
-            & icacls.exe $configDirectory '/inheritance:r' '/grant:r' 'SYSTEM:(OI)(CI)F' 'BUILTIN\Administrators:(OI)(CI)F' | Out-Null
-            if ($LASTEXITCODE -ne 0) { throw "Unable to protect the existing ConfigId directory ACL on '$env:COMPUTERNAME'." }
-            $warningPath = Join-Path $configDirectory 'UNSIGNED-LAB-ONLY.txt'
-            if (Test-Path -LiteralPath $warningPath) { Remove-Item -LiteralPath $warningPath -Force }
-            return
+        # Only the sealed ciphertext is immutable node key material. Rebuild the
+        # runtime configuration on every install/repair so derived paths cannot
+        # remain stale after upgrading from an older toolkit release.
+        $configuration = [ordered]@{
+            schemaVersion = 1
+            configId = $configId
+            resourceName = $resourceName
+            agentRoot = $agentRoot
+            # The shared cluster disk is not mounted on a passive node. Build the
+            # Windows path lexically instead of asking the PowerShell drive provider
+            # to resolve it while node-local configuration is being installed.
+            activeKeyPath = [IO.Path]::Combine($agentRoot, '.credentials_rsaparams')
+            sealedKeyPath = $sealedPath
+            expectedAgentId = [string]$inspectionData.agentId
+            expectedPublicKeySha256 = [string]$inspectionData.publicKeySha256
+            targetFileSddl = [string]$inspectionData.targetFileSddl
         }
-
         $arguments = @('seal', '--envelope', (Join-Path $temporaryPath 'escrow.bin'), '--manifest', (Join-Path $temporaryPath 'manifest.json'), '--config-id', $configId, '--force', '--json')
         $helperPath = 'C:\Program Files\AdoAgentClusterKey\AdoAgent.ClusterKey.exe'
         if ($isLocalExecution) {
@@ -542,20 +602,6 @@ function Set-AdoNodeKeyMaterial {
             throw "Node sealing did not create a nonempty sealed key on '$env:COMPUTERNAME'."
         }
 
-        $configuration = [ordered]@{
-            schemaVersion = 1
-            configId = $configId
-            resourceName = $resourceName
-            agentRoot = $agentRoot
-            # The shared cluster disk is not mounted on a passive node. Build the
-            # Windows path lexically instead of asking the PowerShell drive provider
-            # to resolve it while node-local configuration is being installed.
-            activeKeyPath = [IO.Path]::Combine($agentRoot, '.credentials_rsaparams')
-            sealedKeyPath = $sealedPath
-            expectedAgentId = [string]$inspectionData.agentId
-            expectedPublicKeySha256 = [string]$inspectionData.publicKeySha256
-            targetFileSddl = [string]$inspectionData.targetFileSddl
-        }
         $utf8WithoutBom = New-Object Text.UTF8Encoding($false)
         [IO.File]::WriteAllText($configPath, ($configuration | ConvertTo-Json -Depth 5), $utf8WithoutBom)
         [IO.File]::WriteAllText((Join-Path $configDirectory 'rollback.json'), $rollback, $utf8WithoutBom)
@@ -568,7 +614,7 @@ function Set-AdoNodeKeyMaterial {
             New-Item -ItemType Directory -Path $temporary -Force | Out-Null
             Copy-Item -LiteralPath $EnvelopePath -Destination (Join-Path $temporary 'escrow.bin')
             Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $temporary 'manifest.json')
-            & $configureNode $ConfigId.ToString('D') $temporary $ResourceName $AgentRoot $Inspection.data $RollbackJson ([bool]$PreserveExisting) $true $null
+            & $configureNode $ConfigId.ToString('D') $temporary $ResourceName $AgentRoot $Inspection.data $RollbackJson $true $null
         }
         else {
             $session = New-PSSession -ComputerName $Node
@@ -579,7 +625,7 @@ function Set-AdoNodeKeyMaterial {
             }
             Copy-Item -LiteralPath $EnvelopePath -Destination (Join-Path $temporary 'escrow.bin') -ToSession $session
             Copy-Item -LiteralPath $ManifestPath -Destination (Join-Path $temporary 'manifest.json') -ToSession $session
-            Invoke-Command -Session $session -ScriptBlock $configureNode -ArgumentList $ConfigId.ToString('D'), $temporary, $ResourceName, $AgentRoot, $Inspection.data, $RollbackJson, ([bool]$PreserveExisting), $false, $ProvisioningCredential
+            Invoke-Command -Session $session -ScriptBlock $configureNode -ArgumentList $ConfigId.ToString('D'), $temporary, $ResourceName, $AgentRoot, $Inspection.data, $RollbackJson, $false, $ProvisioningCredential
         }
     }
     finally {
@@ -960,6 +1006,9 @@ function Repair-AdoAgentCluster {
         if ($Reseal) {
             Set-AdoNodeKeyMaterial -Node $clusterNode -ConfigId $ConfigId -EnvelopePath $EnvelopePath -ManifestPath $ManifestPath -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson -ProvisioningCredential $ProvisioningCredential
         }
+        else {
+            Set-AdoPreservedNodeConfiguration -Node $clusterNode -ConfigId $ConfigId -Inspection $inspection -ResourceName $KeyResourceName -AgentRoot $AgentRoot -RollbackJson $rollbackJson
+        }
         Remove-AdoLegacySigningStateOnNode -Node $clusterNode -ConfigId $ConfigId
         $nodeReady = Invoke-Command -ComputerName $clusterNode -ScriptBlock {
             param($id)
@@ -1088,6 +1137,265 @@ function Uninstall-AdoAgentCluster {
     }
     if ($PurgeEscrow) {
         Remove-Item -LiteralPath $EnvelopePath, $ManifestPath -Force
+    }
+}
+
+function Assert-AdoResetAuthenticationParameters {
+    param(
+        [Parameter(Mandatory = $true)][ValidateSet('OAuthToken', 'PersonalAccessToken', 'Integrated', 'Negotiate')][string]$RegistrationAuth,
+        [Security.SecureString]$RegistrationToken,
+        [string]$RegistrationTokenEnvironmentVariableName,
+        [System.Management.Automation.PSCredential]$RegistrationCredential,
+        [switch]$SkipAzureDevOpsUnregister
+    )
+    $hasToken = $null -ne $RegistrationToken
+    $hasEnvironmentToken = -not [string]::IsNullOrWhiteSpace($RegistrationTokenEnvironmentVariableName)
+    if ($hasToken -and $hasEnvironmentToken) { throw 'Specify either RegistrationToken or RegistrationTokenEnvironmentVariableName, not both.' }
+    if ($SkipAzureDevOpsUnregister) {
+        if ($hasToken -or $hasEnvironmentToken -or $null -ne $RegistrationCredential) {
+            throw 'Registration credentials must not be supplied with SkipAzureDevOpsUnregister.'
+        }
+        return
+    }
+    if ($RegistrationAuth -in @('OAuthToken', 'PersonalAccessToken')) {
+        if (($hasToken -or $hasEnvironmentToken) -eq $false -or ($hasToken -and $hasEnvironmentToken)) {
+            throw 'Token-based removal requires exactly one secure token source.'
+        }
+        if ($null -ne $RegistrationCredential) { throw 'RegistrationCredential is valid only with Negotiate.' }
+        return
+    }
+    if ($hasToken -or $hasEnvironmentToken) { throw 'Token input is valid only with OAuthToken or PersonalAccessToken.' }
+    if ($RegistrationAuth -eq 'Negotiate' -and $null -eq $RegistrationCredential) {
+        throw 'Negotiate removal requires RegistrationCredential.'
+    }
+    if ($RegistrationAuth -eq 'Integrated' -and $null -ne $RegistrationCredential) {
+        throw 'Integrated removal uses the current Windows identity and does not accept RegistrationCredential.'
+    }
+}
+
+function Invoke-AdoAgentRegistrationRemoval {
+    param(
+        [Parameter(Mandatory = $true)][string]$AgentRoot,
+        [Parameter(Mandatory = $true)][ValidateSet('OAuthToken', 'PersonalAccessToken', 'Integrated', 'Negotiate')][string]$RegistrationAuth,
+        [string]$RegistrationSecret,
+        [System.Management.Automation.PSCredential]$RegistrationCredential
+    )
+    $configCommand = Join-Path $AgentRoot 'config.cmd'
+    if (-not (Test-Path -LiteralPath $configCommand -PathType Leaf)) {
+        throw "Microsoft agent config.cmd was not found at '$configCommand'."
+    }
+    $start = New-Object Diagnostics.ProcessStartInfo
+    $start.FileName = $env:ComSpec
+    $start.Arguments = '/D /S /C ""{0}" remove --unattended"' -f $configCommand
+    $start.WorkingDirectory = $AgentRoot
+    $start.UseShellExecute = $false
+    $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true
+    $start.RedirectStandardError = $true
+    $start.EnvironmentVariables['VSO_AGENT_IGNORE'] = 'VSTS_AGENT_INPUT_TOKEN,VSTS_AGENT_INPUT_PASSWORD'
+    if ($RegistrationAuth -in @('OAuthToken', 'PersonalAccessToken')) {
+        $start.EnvironmentVariables['VSTS_AGENT_INPUT_AUTH'] = 'PAT'
+        $start.EnvironmentVariables['VSTS_AGENT_INPUT_TOKEN'] = $RegistrationSecret
+    }
+    elseif ($RegistrationAuth -eq 'Integrated') {
+        $start.EnvironmentVariables['VSTS_AGENT_INPUT_AUTH'] = 'Integrated'
+    }
+    else {
+        $start.EnvironmentVariables['VSTS_AGENT_INPUT_AUTH'] = 'Negotiate'
+        $start.EnvironmentVariables['VSTS_AGENT_INPUT_USERNAME'] = $RegistrationCredential.UserName
+        $start.EnvironmentVariables['VSTS_AGENT_INPUT_PASSWORD'] = $RegistrationCredential.GetNetworkCredential().Password
+    }
+    $process = $null
+    try {
+        $process = [Diagnostics.Process]::Start($start)
+        $stdoutTask = $process.StandardOutput.ReadToEndAsync()
+        $stderrTask = $process.StandardError.ReadToEndAsync()
+        $process.WaitForExit()
+        $stdout = $stdoutTask.Result
+        $stderr = $stderrTask.Result
+        if ($process.ExitCode -ne 0) {
+            throw "Microsoft agent removal failed with exit code $($process.ExitCode). Protected key material was retained; review the agent's sanitized _diag log."
+        }
+        $stdout = $null
+        $stderr = $null
+    }
+    finally {
+        foreach ($name in @('VSTS_AGENT_INPUT_TOKEN', 'VSTS_AGENT_INPUT_PASSWORD')) {
+            if ($start.EnvironmentVariables.ContainsKey($name)) { $start.EnvironmentVariables[$name] = '' }
+        }
+        if ($null -ne $process) { $process.Dispose() }
+        $RegistrationSecret = $null
+        $RegistrationCredential = $null
+    }
+}
+
+function Reset-AdoAgentCluster {
+    [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
+    param(
+        [Parameter(Mandatory = $true)][Guid]$ConfigId,
+        [Parameter(Mandatory = $true)][string]$AgentRoot,
+        [Parameter(Mandatory = $true)][string]$EscrowPath,
+        [Parameter(Mandatory = $true)][string]$ClusterRoleName,
+        [Parameter(Mandatory = $true)][string]$SharedDiskResourceName,
+        [Parameter(Mandatory = $true)][string]$KeyResourceName,
+        [Parameter(Mandatory = $true)][string]$ServiceResourceName,
+        [ValidateSet('OAuthToken', 'PersonalAccessToken', 'Integrated', 'Negotiate')][string]$RegistrationAuth = 'PersonalAccessToken',
+        [Security.SecureString]$RegistrationToken,
+        [string]$RegistrationTokenEnvironmentVariableName,
+        [System.Management.Automation.PSCredential]$RegistrationCredential,
+        [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
+        [Parameter(Mandatory = $true)][switch]$ConfirmPermanentReset,
+        [switch]$SkipAzureDevOpsUnregister,
+        [switch]$RemoveToolkitBinaries
+    )
+    Assert-AdoElevated
+    if (-not $ConfirmAgentIdle) { throw '-ConfirmAgentIdle is required and must be true.' }
+    if (-not $ConfirmPermanentReset) { throw '-ConfirmPermanentReset is required and must be true.' }
+    Assert-AdoResetAuthenticationParameters -RegistrationAuth $RegistrationAuth -RegistrationToken $RegistrationToken -RegistrationTokenEnvironmentVariableName $RegistrationTokenEnvironmentVariableName -RegistrationCredential $RegistrationCredential -SkipAzureDevOpsUnregister:$SkipAzureDevOpsUnregister
+    Import-Module FailoverClusters -ErrorAction Stop
+
+    $resolvedAgentRoot = Get-AdoCanonicalPath -Path $AgentRoot -MustExist
+    $resolvedEscrow = Get-AdoCanonicalPath -Path $EscrowPath -MustExist
+    Assert-AdoNoReparsePoint -Path $resolvedAgentRoot
+    Assert-AdoNoReparsePoint -Path $resolvedEscrow
+    $agentVolumeRoot = [IO.Path]::GetPathRoot($resolvedAgentRoot).TrimEnd('\')
+    if ($resolvedAgentRoot.TrimEnd('\') -eq $agentVolumeRoot) { throw 'AgentRoot must not be a volume root.' }
+
+    $disk = Get-ClusterResource -Name $SharedDiskResourceName -ErrorAction Stop
+    $role = Get-ClusterGroup -Name $ClusterRoleName -ErrorAction Stop
+    if ([string]$disk.OwnerGroup.Name -ne $ClusterRoleName) { throw 'The shared disk is not owned by the requested cluster role.' }
+    if ([string]$disk.State -ne 'Online') { throw 'The shared disk must remain Online during reset.' }
+    if ([string]$disk.OwnerNode.Name -ne $env:COMPUTERNAME) {
+        throw "Run reset on shared-disk owner '$($disk.OwnerNode.Name)'."
+    }
+    [string[]]$nodes = @(Get-AdoPossibleOwners -Resource $disk)
+    if ($nodes.Count -eq 0) { throw 'The shared disk has no possible owner nodes.' }
+    $runtimeDirectory = Join-Path $script:ConfigRoot $ConfigId.ToString('D')
+    $rollbackPath = Join-Path $runtimeDirectory 'rollback.json'
+    $runtimeConfigPath = Join-Path $runtimeDirectory 'config.json'
+    if (-not (Test-Path -LiteralPath $rollbackPath -PathType Leaf)) { throw "Rollback snapshot '$rollbackPath' is missing." }
+    if (-not (Test-Path -LiteralPath $runtimeConfigPath -PathType Leaf)) { throw "Runtime configuration '$runtimeConfigPath' is missing." }
+    $rollbackSnapshot = Get-Content -LiteralPath $rollbackPath -Raw | ConvertFrom-Json
+    [string[]]$serviceNames = @(
+        @($rollbackSnapshot.Services | ForEach-Object { [string]$_.Name })
+        [string]$rollbackSnapshot.ServiceName
+    ) | Where-Object { -not [string]::IsNullOrWhiteSpace($_) } | Sort-Object -Unique
+    if ($serviceNames.Count -eq 0) { throw 'Rollback snapshot does not identify the agent service to remove.' }
+    $serviceNamePayload = [pscustomobject]@{ Names = $serviceNames }
+    $runtimeConfig = Get-Content -LiteralPath $runtimeConfigPath -Raw | ConvertFrom-Json
+    $configuredAgentRoot = Get-AdoCanonicalPath -Path ([string]$runtimeConfig.agentRoot)
+    if ([string]$runtimeConfig.configId -ne $ConfigId.ToString('D') -or
+        [string]$runtimeConfig.resourceName -ne $KeyResourceName -or
+        $configuredAgentRoot -ne $resolvedAgentRoot) {
+        throw 'Runtime configuration does not bind the requested ConfigId, key resource, and AgentRoot.'
+    }
+    if (-not $SkipAzureDevOpsUnregister -and -not (Test-Path -LiteralPath (Join-Path $resolvedAgentRoot 'config.cmd') -PathType Leaf)) {
+        throw 'Microsoft agent config.cmd is required to unregister the Azure DevOps agent before purge.'
+    }
+
+    $action = "permanently unregister and purge ConfigId $($ConfigId.ToString('D')) from $($nodes -join ', ')"
+    if (-not $PSCmdlet.ShouldProcess($ClusterRoleName, $action)) {
+        return [pscustomobject]@{ ConfigId = $ConfigId; Planned = $true; Nodes = $nodes; AgentRoot = $resolvedAgentRoot; EscrowPath = $resolvedEscrow }
+    }
+
+    $registrationSecret = $null
+    try {
+        foreach ($resourceName in @($ServiceResourceName, $KeyResourceName)) {
+            $resource = Get-AdoResourceOrNull -Name $resourceName
+            if ($null -ne $resource -and [string]$resource.State -ne 'Offline') {
+                Stop-ClusterResource -InputObject $resource -Wait 60 | Out-Null
+            }
+        }
+        Uninstall-AdoAgentCluster -ConfigId $ConfigId -ClusterRoleName $ClusterRoleName -KeyResourceName $KeyResourceName -ServiceResourceName $ServiceResourceName -ConfirmAgentIdle -Confirm:$false
+
+        foreach ($resourceName in @($ServiceResourceName, $KeyResourceName)) {
+            $resource = Get-AdoResourceOrNull -Name $resourceName
+            if ($null -ne $resource) { Remove-ClusterResource -InputObject $resource -Force }
+        }
+
+        if (-not $SkipAzureDevOpsUnregister) {
+            if ($RegistrationAuth -in @('OAuthToken', 'PersonalAccessToken')) {
+                $registrationSecret = Get-AdoRegistrationSecret -RegistrationToken $RegistrationToken -RegistrationTokenEnvironmentVariableName $RegistrationTokenEnvironmentVariableName
+            }
+            Invoke-AdoAgentRegistrationRemoval -AgentRoot $resolvedAgentRoot -RegistrationAuth $RegistrationAuth -RegistrationSecret $registrationSecret -RegistrationCredential $RegistrationCredential
+        }
+
+        $nodeResults = @(Invoke-Command -ComputerName $nodes -ScriptBlock {
+            param($id, $agentRoot, $expectedServiceNames, $removeToolkit)
+            $escapedAgentRoot = [WildcardPattern]::Escape($agentRoot.TrimEnd('\') + '\')
+            $servicePathPattern = '*' + $escapedAgentRoot + '*'
+            $services = @(
+                foreach ($serviceName in @($expectedServiceNames.Names)) {
+                    $escapedServiceName = ([string]$serviceName).Replace("'", "''")
+                    $service = Get-CimInstance Win32_Service -Filter "Name='$escapedServiceName'" -ErrorAction SilentlyContinue
+                    if ($null -ne $service) {
+                        if ($service.Name -notlike 'vstsagent*' -or $service.PathName -notlike $servicePathPattern) {
+                            throw "Refusing to delete service '$($service.Name)' because it is not bound beneath the requested AgentRoot."
+                        }
+                        $service
+                    }
+                }
+            )
+            foreach ($service in $services) {
+                Stop-Service -Name $service.Name -Force -ErrorAction SilentlyContinue
+                Invoke-CimMethod -InputObject $service -MethodName Delete | Out-Null
+            }
+
+            $runtimeRoot = [IO.Path]::GetFullPath('C:\ProgramData\AdoAgentClusterKey').TrimEnd('\')
+            $target = [IO.Path]::GetFullPath((Join-Path $runtimeRoot $id))
+            if (-not $target.StartsWith($runtimeRoot + '\', [StringComparison]::OrdinalIgnoreCase)) {
+                throw "Refusing unexpected runtime purge path '$target'."
+            }
+            if (Test-Path -LiteralPath $target) {
+                if (((Get-Item -LiteralPath $target -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Refusing to purge a runtime reparse point.' }
+                Remove-Item -LiteralPath $target -Recurse -Force
+            }
+
+            $binariesRemoved = $false
+            if ($removeToolkit) {
+                $remaining = @(Get-ChildItem -LiteralPath $runtimeRoot -Force -ErrorAction SilentlyContinue)
+                if ($remaining.Count -eq 0) {
+                    $installRoot = [IO.Path]::GetFullPath('C:\Program Files\AdoAgentClusterKey').TrimEnd('\')
+                    if ($installRoot -ne 'C:\Program Files\AdoAgentClusterKey') { throw 'Refusing an unexpected toolkit installation path.' }
+                    if (Test-Path -LiteralPath $installRoot) {
+                        if (((Get-Item -LiteralPath $installRoot -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Refusing to purge a toolkit reparse point.' }
+                        Remove-Item -LiteralPath $installRoot -Recurse -Force
+                    }
+                    if (Test-Path -LiteralPath $runtimeRoot) { Remove-Item -LiteralPath $runtimeRoot -Force }
+                    $binariesRemoved = $true
+                }
+            }
+            [pscustomobject]@{ Node = $env:COMPUTERNAME; RemovedServices = @($services.Name); RuntimeRemoved = -not (Test-Path -LiteralPath $target); BinariesRemoved = $binariesRemoved }
+        } -ArgumentList $ConfigId.ToString('D'), $resolvedAgentRoot, $serviceNamePayload, ([bool]$RemoveToolkitBinaries))
+
+        $removedEscrow = @()
+        foreach ($suffix in @('.envelope.bin', '.manifest.json', '.rollback.json', '.setup.json')) {
+            $artifact = Join-Path $resolvedEscrow ($ConfigId.ToString('D') + $suffix)
+            $resolvedArtifact = [IO.Path]::GetFullPath($artifact)
+            if (-not $resolvedArtifact.StartsWith($resolvedEscrow + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Refusing an unexpected escrow purge path.' }
+            if (Test-Path -LiteralPath $resolvedArtifact) {
+                Remove-Item -LiteralPath $resolvedArtifact -Force
+                $removedEscrow += $resolvedArtifact
+            }
+        }
+
+        Assert-AdoNoReparsePoint -Path $resolvedAgentRoot
+        if (Test-Path -LiteralPath $resolvedAgentRoot) { Remove-Item -LiteralPath $resolvedAgentRoot -Recurse -Force }
+        [pscustomobject]@{
+            ConfigId = $ConfigId
+            Reset = $true
+            AzureDevOpsUnregistered = -not $SkipAzureDevOpsUnregister
+            Nodes = $nodes
+            NodeResults = $nodeResults
+            RemovedEscrowArtifacts = $removedEscrow
+            AgentRootRemoved = -not (Test-Path -LiteralPath $resolvedAgentRoot)
+            ClusterRolePreserved = $null -ne (Get-ClusterGroup -Name $role.Name -ErrorAction SilentlyContinue)
+            SharedDiskPreserved = $null -ne (Get-ClusterResource -Name $disk.Name -ErrorAction SilentlyContinue)
+        }
+    }
+    finally {
+        $registrationSecret = $null
+        $RegistrationCredential = $null
     }
 }
 
@@ -1271,5 +1579,6 @@ Export-ModuleMember -Function @(
     'Repair-AdoAgentCluster',
     'Remove-AdoAgentClusterNode',
     'Uninstall-AdoAgentCluster',
+    'Reset-AdoAgentCluster',
     'Invoke-AdoAgentClusterEvaluation'
 )

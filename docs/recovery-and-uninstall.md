@@ -111,3 +111,31 @@ Cluster uninstall and Azure DevOps unregistration are intentionally separate:
 6. delete AgentRoot or protected key material only through separately approved purge actions.
 
 If the deployment identity is unavailable, an Azure DevOps administrator can remove the server-side object in the portal, but local files still require controlled cleanup. An agent ID by itself is not an authentication credential.
+
+## Permanent reset and retry from scratch
+
+Use the packaged reset entry point when the approved outcome is to remove the entire logical agent configuration and begin again with a new ConfigId. Run it from the current online shared-disk owner. It preserves the existing role, disk, and Azure DevOps pool but permanently removes the named agent registration, toolkit resources, matching services, shared AgentRoot, node ConfigId directories, escrow envelope/manifest/rollback, and setup state.
+
+```powershell
+$pat = Read-Host -Prompt 'Temporary agent-pool administration PAT' -AsSecureString
+
+.\Reset-AdoAgentCluster.ps1 `
+  -ConfigId '<old-config-guid>' `
+  -AgentRoot '<shared-agent-root>' `
+  -EscrowPath '<escrow-folder>' `
+  -ClusterRoleName '<role>' `
+  -SharedDiskResourceName '<disk-resource>' `
+  -KeyResourceName '<key-resource>' `
+  -ServiceResourceName '<service-resource>' `
+  -RegistrationAuth PersonalAccessToken `
+  -RegistrationToken $pat `
+  -ConfirmAgentIdle `
+  -ConfirmPermanentReset `
+  -WhatIf
+
+# Remove -WhatIf only after reviewing the exact target and owner list.
+```
+
+The command does not consume a token environment variable under `-WhatIf`. Once execution is approved, credentials are supplied only through the `config.cmd` child environment and are cleared in `finally`. If Azure DevOps unregistration fails, the command stops before purging protected material. `-SkipAzureDevOpsUnregister` is restricted to an agent object already removed through a separately authorized process. `-RemoveToolkitBinaries` removes the Program Files installation only on nodes with no remaining runtime configuration.
+
+After a successful reset, verify the old agent object is absent and rerun `Initialize-AdoAgentCluster.ps1` without `-Resume`, using a newly generated ConfigId.

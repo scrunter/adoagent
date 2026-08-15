@@ -228,6 +228,7 @@ It is nonsecret but integrity-sensitive. Keep it beside the envelope under escro
 | `Repair-AdoAgentCluster` | restore package/service/resource drift | optional explicit reseal, additive dependencies |
 | `Remove-AdoAgentClusterNode` | remove possible owner | refuses active/last owner, preserves sealed data by default |
 | `Uninstall-AdoAgentCluster` | restore snapshot/remove toolkit resources | preserves sealed/escrow by default, distinct purge switches |
+| `Reset-AdoAgentCluster` | permanently unregister and purge one logical agent before starting over | exact ConfigId/path binding, child-only registration credential, two explicit confirmations, optional binary removal |
 | `Invoke-AdoAgentClusterEvaluation` | evidence-producing two-node tests | `SupportsShouldProcess`, negative tests opt-in, restoration in `finally` |
 
 Every mutating function supports `-WhatIf`. `-ConfirmAgentIdle` is an explicit operator assertion; it does not make running jobs resumable.

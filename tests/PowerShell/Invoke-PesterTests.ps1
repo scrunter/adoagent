@@ -24,7 +24,7 @@ if ($loadedPesterVersion -ne $requiredPesterVersion) {
 
 Write-Output "Running PowerShell tests with Pester $loadedPesterVersion."
 if (-not $Path) {
-    $Path = @('Module.Tests.ps1', 'AgentSetup.Tests.ps1', 'ClusterInstall.Tests.ps1', 'ReleaseWorkflow.Tests.ps1')
+    $Path = @('Module.Tests.ps1', 'AgentSetup.Tests.ps1', 'ClusterInstall.Tests.ps1', 'Reset.Tests.ps1', 'ReleaseWorkflow.Tests.ps1')
 }
 
 foreach ($testPath in $Path) {
