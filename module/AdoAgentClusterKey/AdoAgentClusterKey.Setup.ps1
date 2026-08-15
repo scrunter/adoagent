@@ -302,7 +302,9 @@ function Get-AdoManagedAgentPool {
     $uri = New-Object Uri($BaseUri, "_apis/distributedtask/pools?poolName=$escaped&actionFilter=manage&api-version=5.0")
     $response = Invoke-AdoHttpGet -Uri $uri -BaseUri $BaseUri -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationSecret $RegistrationSecret -RegistrationCredential $RegistrationCredential -AllowInsecureServerUrl:$AllowInsecureServerUrl
     $json = ConvertFrom-AdoJsonResponse -Content $response.Content -Operation 'validating agent-pool administration'
-    $items = if ($null -ne $json.PSObject.Properties['value']) { @($json.value) } else { @($json) }
+    [object[]]$items = @()
+    if ($null -ne $json.PSObject.Properties['value']) { $items = [object[]]@($json.value) }
+    else { $items = [object[]]@($json) }
     $matches = @($items | Where-Object { [string]$_.name -eq $PoolName })
     if ($matches.Count -ne 1) { throw 'The deployment identity cannot manage the exact requested agent pool, or the pool is ambiguous.' }
     return $matches[0]
@@ -323,7 +325,9 @@ function Get-AdoExistingAgent {
     $uri = New-Object Uri($BaseUri, "_apis/distributedtask/pools/$PoolId/agents?agentName=$escaped&api-version=5.0")
     $response = Invoke-AdoHttpGet -Uri $uri -BaseUri $BaseUri -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationSecret $RegistrationSecret -RegistrationCredential $RegistrationCredential -AllowInsecureServerUrl:$AllowInsecureServerUrl
     $json = ConvertFrom-AdoJsonResponse -Content $response.Content -Operation 'checking the requested agent name'
-    $items = if ($null -ne $json.PSObject.Properties['value']) { @($json.value) } else { @($json) }
+    [object[]]$items = @()
+    if ($null -ne $json.PSObject.Properties['value']) { $items = [object[]]@($json.value) }
+    else { $items = [object[]]@($json) }
     $matches = @($items | Where-Object { [string]$_.name -eq $AgentName })
     if ($matches.Count -gt 1) { throw 'Azure DevOps returned more than one exact agent-name match.' }
     if ($matches.Count -eq 1) { return $matches[0] }
@@ -342,9 +346,11 @@ function Get-AdoAgentPackageMetadata {
     $uri = New-Object Uri($BaseUri, '_apis/distributedtask/packages/agent?platform=win-x64&%24top=1')
     $response = Invoke-AdoHttpGet -Uri $uri -BaseUri $BaseUri -ServerType $ServerType -RegistrationAuth $RegistrationAuth -RegistrationSecret $RegistrationSecret -RegistrationCredential $RegistrationCredential -AllowInsecureServerUrl:$AllowInsecureServerUrl
     $json = ConvertFrom-AdoJsonResponse -Content $response.Content -Operation 'selecting a compatible agent package'
-    $items = if ($null -ne $json.PSObject.Properties['value']) { @($json.value) } else { @($json) }
-    if ($items.Count -lt 1 -or [string]::IsNullOrWhiteSpace([string]$items[0].downloadUrl)) {
-        throw 'Azure DevOps did not return a compatible win-x64 agent package.'
+    [object[]]$items = @()
+    if ($null -ne $json.PSObject.Properties['value']) { $items = [object[]]@($json.value) }
+    else { $items = [object[]]@($json) }
+    if ($items.Count -ne 1 -or [string]::IsNullOrWhiteSpace([string]$items[0].downloadUrl)) {
+        throw 'Azure DevOps did not return exactly one compatible win-x64 agent package.'
     }
     $downloadUri = $null
     if (-not [Uri]::TryCreate([string]$items[0].downloadUrl, [UriKind]::Absolute, [ref]$downloadUri)) {
