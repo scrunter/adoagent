@@ -92,6 +92,26 @@ Describe 'AdoAgentClusterKey module contract' {
             Remove-Variable -Name AdoOwnerNodeList -Scope Global -ErrorAction SilentlyContinue
         }
     }
+
+    It 'normalizes object-shaped possible owners to CLR strings' {
+        $global:AdoOwnerNodeList = [pscustomobject]@{
+            ClusterObject = 'Cluster Virtual Disk (ADOT)'
+            OwnerNodes = @(
+                [pscustomobject]@{ Name = 'node-b' },
+                [pscustomobject]@{ Name = 'node-a' }
+            )
+        }
+        try {
+            InModuleScope AdoAgentClusterKey {
+                $actual = @(ConvertFrom-AdoClusterOwnerNodeList -OwnerNodeList $global:AdoOwnerNodeList)
+                $actual | Should -Be @('node-a', 'node-b')
+                foreach ($name in $actual) { $name.GetType() | Should -Be ([string]) }
+            }
+        }
+        finally {
+            Remove-Variable -Name AdoOwnerNodeList -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
 }
 
 Describe 'Package integrity policy' {
