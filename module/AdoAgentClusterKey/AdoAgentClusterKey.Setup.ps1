@@ -653,14 +653,21 @@ function Get-AdoObjectSha256 {
 
 function Write-AdoSetupState {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)]$State)
-    $temporary = $Path + '.tmp.' + [Guid]::NewGuid().ToString('N')
+    $operationId = [Guid]::NewGuid().ToString('N')
+    $temporary = $Path + '.tmp.' + $operationId
+    $backup = $Path + '.bak.' + $operationId
     $utf8 = New-Object Text.UTF8Encoding($false)
     try {
         [IO.File]::WriteAllText($temporary, ($State | ConvertTo-Json -Depth 12), $utf8)
-        if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $null, $true) }
+        if (Test-Path -LiteralPath $Path) { [IO.File]::Replace($temporary, $Path, $backup, $true) }
         else { [IO.File]::Move($temporary, $Path) }
     }
-    finally { if (Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
+    finally {
+        foreach ($artifact in @($temporary, $backup)) {
+            try { if (Test-Path -LiteralPath $artifact) { [IO.File]::Delete($artifact) } }
+            catch { }
+        }
+    }
 }
 
 function New-AdoSetupState {
@@ -955,13 +962,15 @@ function Initialize-AdoAgentCluster {
         }
     }
     catch {
+        $originalError = $_
         if (-not [string]::IsNullOrWhiteSpace($serviceNameForFailure)) { Stop-Service -Name $serviceNameForFailure -Force -ErrorAction SilentlyContinue }
         if ($null -ne $state -and (Test-Path -LiteralPath $statePath)) {
             $state.lastFailurePhase = [string]$state.phase
             $state.updatedUtc = [DateTime]::UtcNow.ToString('o')
-            Write-AdoSetupState -Path $statePath -State $state
+            try { Write-AdoSetupState -Path $statePath -State $state }
+            catch { Write-Warning 'Unable to persist sanitized setup failure metadata; the original setup error follows.' }
         }
-        throw
+        $PSCmdlet.ThrowTerminatingError($originalError)
     }
     finally { $registrationSecret = $null }
 }
