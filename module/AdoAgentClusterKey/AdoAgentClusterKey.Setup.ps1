@@ -701,6 +701,28 @@ function Test-AdoSetupKeyArtifactsExist {
     return $false
 }
 
+function Test-AdoSetupProtectorSidMatchesManifest {
+    param(
+        [Parameter(Mandatory = $true)][string]$EscrowPath,
+        [Parameter(Mandatory = $true)][Guid]$ConfigId,
+        [Parameter(Mandatory = $true)][string]$RequestedSid
+    )
+    $manifestPath = Join-Path $EscrowPath ($ConfigId.ToString('D') + '.manifest.json')
+    if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { return $false }
+    Assert-AdoNoReparsePoint -Path $manifestPath
+    try { $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json }
+    catch { throw 'The escrow manifest is malformed; the protector binding cannot be verified.' }
+    if ($manifest.PSObject.Properties.Name -notcontains 'protectorSid' -or [string]::IsNullOrWhiteSpace([string]$manifest.protectorSid)) {
+        throw 'The escrow manifest does not contain a protector SID.'
+    }
+    try {
+        $manifestSid = New-Object Security.Principal.SecurityIdentifier([string]$manifest.protectorSid)
+        $requestedSecurityIdentifier = New-Object Security.Principal.SecurityIdentifier($RequestedSid)
+    }
+    catch { throw 'The escrow manifest or requested protector SID is invalid.' }
+    return $manifestSid.Equals($requestedSecurityIdentifier)
+}
+
 function Write-AdoSetupState {
     param([Parameter(Mandatory = $true)][string]$Path, [Parameter(Mandatory = $true)]$State)
     $operationId = [Guid]::NewGuid().ToString('N')
@@ -839,7 +861,7 @@ function Initialize-AdoAgentCluster {
     Assert-AdoNoReparsePoint -Path $resolvedEscrow
     Assert-AdoNoReparsePoint -Path $resolvedToolkit
     Test-AdoReleasePackage -PackagePath $resolvedToolkit | Out-Null
-    try { Get-AdoProtectorGroupValidation -Identity $ProtectorGroup | Out-Null }
+    try { $protectorValidation = Get-AdoProtectorGroupValidation -Identity $ProtectorGroup }
     catch { throw "ProtectorGroup prerequisite failed. $($_.Exception.Message)" }
     if ([string]::IsNullOrWhiteSpace($AgentPackagePath) -ne [string]::IsNullOrWhiteSpace($AgentPackageSha256)) {
         throw 'AgentPackagePath and AgentPackageSha256 must be supplied together.'
@@ -892,10 +914,15 @@ function Initialize-AdoAgentCluster {
     if ($null -ne $state -and [string]$state.immutableSha256 -ne $immutableHash) {
         $protectorChanged = [string]$state.immutable.protectorGroup -cne [string]$immutable.protectorGroup
         $keyArtifactsExist = Test-AdoSetupKeyArtifactsExist -EscrowPath $resolvedEscrow -ConfigId $ConfigId
-        $allowProtectorGroupChange = $phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled') -and -not $keyArtifactsExist
+        $sameProtectorBinding = $protectorChanged -and (
+            [string]$state.immutable.protectorGroup -ieq [string]$immutable.protectorGroup -or
+            ($keyArtifactsExist -and (Test-AdoSetupProtectorSidMatchesManifest -EscrowPath $resolvedEscrow -ConfigId $ConfigId -RequestedSid ([string]$protectorValidation.Sid)))
+        )
+        $allowProtectorGroupChange = $sameProtectorBinding -or
+            ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled') -and -not $keyArtifactsExist)
         if (-not $Resume -or -not (Test-AdoSetupPermittedResumeChange -SavedImmutable $state.immutable -RequestedImmutable $immutable -AllowProtectorGroupChange:$allowProtectorGroupChange)) {
             if ($protectorChanged -and $keyArtifactsExist) {
-                throw 'ProtectorGroup cannot change because escrow or rollback key artifacts already exist for this ConfigId.'
+                throw 'ProtectorGroup resolves to a different SID than the existing escrow manifest, or the manifest is unavailable. Use a name that resolves to the original protector group.'
             }
             throw 'Resume inputs do not match the immutable setup state.'
         }

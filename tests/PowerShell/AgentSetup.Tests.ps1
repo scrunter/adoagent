@@ -37,7 +37,7 @@ Describe 'Deployment-authenticated agent setup contract' {
         $source | Should -Not -Match 'provisioningCredential\s*='
     }
 
-    It 'allows a verified toolkit path and only a pre-escrow protector correction during resume' {
+    It 'allows a verified toolkit path and only a verified protector correction during resume' {
         InModuleScope AdoAgentClusterKey {
             $saved = [ordered]@{
                 schemaVersion = 1
@@ -70,6 +70,18 @@ Describe 'Deployment-authenticated agent setup contract' {
         $source.IndexOf('if ($rebindToolkitPackage -or $rebindProtectorGroup)') | Should -BeGreaterThan $source.IndexOf('if (-not $PSCmdlet.ShouldProcess')
         $source | Should -Match 'Test-AdoSetupKeyArtifactsExist'
         $source | Should -Match 'RebindProtectorGroup'
+        $source | Should -Match 'Test-AdoSetupProtectorSidMatchesManifest'
+    }
+
+    It 'accepts an escrowed protector alias only when its resolved SID matches the manifest' {
+        $global:AdoSetupEscrowPath = $TestDrive
+        $global:AdoSetupConfigId = [Guid]'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+        $global:AdoSetupManifestPath = Join-Path $TestDrive ($global:AdoSetupConfigId.ToString('D') + '.manifest.json')
+        @{ schemaVersion = 1; protectorSid = 'S-1-5-21-111-222-333-444' } | ConvertTo-Json | Set-Content -LiteralPath $global:AdoSetupManifestPath -Encoding UTF8
+        InModuleScope AdoAgentClusterKey {
+            (Test-AdoSetupProtectorSidMatchesManifest -EscrowPath $global:AdoSetupEscrowPath -ConfigId $global:AdoSetupConfigId -RequestedSid 'S-1-5-21-111-222-333-444') | Should -Be $true
+            (Test-AdoSetupProtectorSidMatchesManifest -EscrowPath $global:AdoSetupEscrowPath -ConfigId $global:AdoSetupConfigId -RequestedSid 'S-1-5-21-111-222-333-445') | Should -Be $false
+        }
     }
 
     It 'reports protector resolution, group type, and logon membership separately' {
