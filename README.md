@@ -127,6 +127,29 @@ The following is the short path for an already registered, idle nonproduction ag
 
 The toolkit does not require or validate Authenticode signatures. Verify the ZIP SHA-256 against a value obtained through an approved channel before extraction; the internal manifest alone does not establish publisher identity.
 
+## Permanent reset
+
+`Reset-AdoAgentCluster.ps1` removes one logical clustered agent so setup can start again with a new ConfigId. It unregisters the agent through Microsoft's `config.cmd remove --unattended`, removes the toolkit cluster resources and matching services, deletes the exact ConfigId's node-local and escrow artifacts, and deletes the shared AgentRoot. It preserves the existing cluster role, shared disk, and Azure DevOps pool. Run it only from the online shared-disk owner after draining all work:
+
+```powershell
+$pat = Read-Host -Prompt 'Temporary agent-pool administration PAT' -AsSecureString
+
+.\Reset-AdoAgentCluster.ps1 `
+  -ConfigId '<old-config-guid>' `
+  -AgentRoot '<shared-disk>:\AdoAgent' `
+  -EscrowPath '<secure-admin-escrow-folder>' `
+  -ClusterRoleName '<existing-role>' `
+  -SharedDiskResourceName '<existing-disk-resource>' `
+  -KeyResourceName '<existing-role> - Key Selector' `
+  -ServiceResourceName '<existing-role> - ADO Agent' `
+  -RegistrationAuth PersonalAccessToken `
+  -RegistrationToken $pat `
+  -ConfirmAgentIdle `
+  -ConfirmPermanentReset
+```
+
+Use `-WhatIf` first. `-RemoveToolkitBinaries` is separately explicit; omit it when another ConfigId may use the node installation. `-SkipAzureDevOpsUnregister` is only for an agent object already removed through an authorized Azure DevOps process and rejects credential inputs.
+
 ## Repository layout
 
 - `src/AdoAgent.ClusterKey*`: Native AOT helper and security boundary.
@@ -134,6 +157,7 @@ The toolkit does not require or validate Authenticode signatures. Verify the ZIP
 - `module/AdoAgentClusterKey`: Windows PowerShell 5.1 setup and operations module.
 - `setup/Install-AdoAgentCluster.ps1`: full existing-agent installation entry point for all disk possible owners.
 - `setup/Initialize-AdoAgentCluster.ps1`: new-agent bootstrap entry point.
+- `setup/Reset-AdoAgentCluster.ps1`: permanent single-ConfigId unregister and purge entry point.
 - `tests`: native crypto/workflow tests plus PowerShell and VBS contract tests.
 - `build`: deterministic package, SBOM, SHA-256 manifest, checksum, and ZIP automation.
 - `.github/workflows/release.yml`: tag/manual Windows build, verification, workflow artifact retention, and GitHub Release publishing.

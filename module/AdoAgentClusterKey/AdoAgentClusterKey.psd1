@@ -16,6 +16,7 @@
         'Repair-AdoAgentCluster',
         'Remove-AdoAgentClusterNode',
         'Uninstall-AdoAgentCluster',
+        'Reset-AdoAgentCluster',
         'Invoke-AdoAgentClusterEvaluation'
     )
     CmdletsToExport = @()

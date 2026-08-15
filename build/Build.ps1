@@ -43,6 +43,7 @@ Copy-Item -LiteralPath (Join-Path $repositoryRoot 'module\AdoAgentClusterKey\Ado
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.Setup.ps1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'setup\Install-AdoAgentCluster.ps1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'setup\Initialize-AdoAgentCluster.ps1') -Destination $packagePath
+Copy-Item -LiteralPath (Join-Path $repositoryRoot 'setup\Reset-AdoAgentCluster.ps1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'build\Test-Release.ps1') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'README.md') -Destination $packagePath
 Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $packagePath

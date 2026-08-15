@@ -10,8 +10,9 @@ $vbsPath = Join-Path $repositoryRoot 'cluster\AdoAgentClusterKey.vbs'
 $setupModulePath = Join-Path $repositoryRoot 'module\AdoAgentClusterKey\AdoAgentClusterKey.Setup.ps1'
 $setupScriptPath = Join-Path $repositoryRoot 'setup\Initialize-AdoAgentCluster.ps1'
 $installScriptPath = Join-Path $repositoryRoot 'setup\Install-AdoAgentCluster.ps1'
+$resetScriptPath = Join-Path $repositoryRoot 'setup\Reset-AdoAgentCluster.ps1'
 
-foreach ($path in @($modulePath, $setupModulePath, $setupScriptPath, $installScriptPath)) {
+foreach ($path in @($modulePath, $setupModulePath, $setupScriptPath, $installScriptPath, $resetScriptPath)) {
     $errors = $null
     [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$null, [ref]$errors) | Out-Null
     if (@($errors).Count -ne 0) { throw "PowerShell parse errors in '$path': $($errors.Message -join '; ')" }
@@ -22,6 +23,7 @@ $expected = @(
     'Initialize-AdoAgentCluster',
     'Test-AdoAgentClusterPrerequisite', 'Install-AdoAgentCluster', 'Add-AdoAgentClusterNode',
     'Repair-AdoAgentCluster', 'Remove-AdoAgentClusterNode', 'Uninstall-AdoAgentCluster',
+    'Reset-AdoAgentCluster',
     'Invoke-AdoAgentClusterEvaluation'
 )
 $actual = @(Get-Command -Module AdoAgentClusterKey | Select-Object -ExpandProperty Name)
