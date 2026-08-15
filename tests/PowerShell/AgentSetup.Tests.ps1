@@ -257,11 +257,13 @@ Describe 'Deployment-authenticated agent setup contract' {
         }
     }
 
-    It 'does not let failure-state persistence mask the original setup error' {
+    It 'records a sanitized operation and preserves the original setup error as the inner exception' {
         $source = Get-Content -LiteralPath $setupModulePath -Raw
         $source | Should -Match '\$originalError = \$_'
         $source | Should -Match 'Unable to persist sanitized setup failure metadata'
-        $source | Should -Match '\$PSCmdlet\.ThrowTerminatingError\(\$originalError\)'
+        $source | Should -Match 'lastFailureOperation'
+        $source | Should -Match 'AdoAgentClusterSetup\.\$currentOperation'
+        $source | Should -Match 'InvalidOperationException.*\$originalError\.Exception'
     }
 }
 
@@ -269,6 +271,29 @@ Describe 'Agent package extraction security' {
     BeforeEach {
         $global:AdoSetupExtractionRoot = Join-Path $TestDrive ([Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $global:AdoSetupExtractionRoot | Out-Null
+    }
+
+    It 'walks a mapped drive root without calling Split-Path on the root' {
+        $available = @('Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z') |
+            Where-Object { -not (Test-Path -LiteralPath ($_ + ':\')) }
+        if (@($available).Count -eq 0) { throw 'No drive letter is available for the mapped-root regression test.' }
+        $driveName = [string]$available[0] + ':'
+        & subst.exe $driveName $global:AdoSetupExtractionRoot
+        if ($LASTEXITCODE -ne 0) { throw "Unable to create test drive $driveName." }
+        try {
+            $global:AdoSetupMappedRoot = $driveName + '\'
+            $global:AdoSetupMappedChild = Join-Path $global:AdoSetupMappedRoot 'agent-root'
+            New-Item -ItemType Directory -Path $global:AdoSetupMappedChild | Out-Null
+            InModuleScope AdoAgentClusterKey {
+                { Assert-AdoNoReparsePoint -Path $global:AdoSetupMappedRoot } | Should -Not -Throw
+                { Assert-AdoNoReparsePoint -Path $global:AdoSetupMappedChild } | Should -Not -Throw
+            }
+        }
+        finally {
+            & subst.exe $driveName /D
+            Remove-Variable -Name AdoSetupMappedRoot -Scope Global -ErrorAction SilentlyContinue
+            Remove-Variable -Name AdoSetupMappedChild -Scope Global -ErrorAction SilentlyContinue
+        }
     }
 
     It 'extracts a minimal valid package into an empty target' {

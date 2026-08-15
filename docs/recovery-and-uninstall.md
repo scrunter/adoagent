@@ -10,7 +10,7 @@
 
 ## New-agent setup interruption
 
-Read `<EscrowPath>\<ConfigId>.setup.json` and use its `phase` and `lastFailurePhase`; the file is nonsecret but integrity-sensitive.
+Read `<EscrowPath>\<ConfigId>.setup.json` and use its `phase`, `lastFailurePhase`, and `lastFailureOperation`; the file is nonsecret but integrity-sensitive. `lastFailureOperation` identifies the exact sanitized operation that failed without exposing a token, password, or key.
 
 - `Preflight` or `PackageStaged`: correct the prerequisite and rerun the same immutable inputs with `-Resume`. A registration token is still required.
 - `RegisteredStopped` with `registrationOfflineVerified: false`: keep the service stopped, supply a fresh registration credential, and resume the Offline check.
