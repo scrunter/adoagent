@@ -24,7 +24,7 @@ function Resolve-AdoGroupSid {
         return $account.Translate([Security.Principal.SecurityIdentifier]).Value
     }
     catch {
-        throw "Unable to resolve '$Identity' to a security-group SID. $($_.Exception.Message)"
+        throw "Unable to resolve ProtectorGroup '$Identity'. Use a domain-qualified Active Directory security-group name such as 'CONTOSO\AdoAgentKeyRecoveryOperators'. $($_.Exception.Message)"
     }
 }
 
@@ -46,8 +46,18 @@ function Assert-AdoSecurityGroupSid {
         if ($groupType -ge 0) { throw 'The protector group is not security-enabled.' }
     }
     catch {
-        throw "Unable to validate the protector as an AD security group. $($_.Exception.Message)"
+        throw "Unable to validate the protector as a security-enabled Active Directory group. Local groups and distribution groups are not supported. $($_.Exception.Message)"
     }
+}
+
+function Get-AdoProtectorGroupValidation {
+    param([Parameter(Mandatory = $true)][string]$Identity)
+    $sid = Resolve-AdoGroupSid -Identity $Identity
+    Assert-AdoSecurityGroupSid -Sid $sid
+    if (-not (Test-AdoCurrentTokenSid -Sid $sid)) {
+        throw "The current logon token does not contain ProtectorGroup '$Identity' ($sid). Add the provisioning administrator to the group, then sign out and sign back in before retrying."
+    }
+    return [pscustomobject]@{ Identity = $Identity; Sid = $sid; InCurrentToken = $true }
 }
 
 function Get-AdoPackageFiles {
@@ -548,7 +558,26 @@ function Test-AdoAgentClusterPrerequisite {
     Add-Check 'PowerShell51' ($PSVersionTable.PSEdition -eq 'Desktop' -and $PSVersionTable.PSVersion -ge [version]'5.1') "Edition=$($PSVersionTable.PSEdition) PowerShell=$($PSVersionTable.PSVersion)"
     $clusterModule = Get-Module -ListAvailable FailoverClusters | Select-Object -First 1
     Add-Check 'FailoverClusters' ($null -ne $clusterModule) $(if ($clusterModule) { $clusterModule.Version.ToString() } else { 'Module not installed.' })
-    try { $sid = Resolve-AdoGroupSid -Identity $ProtectorGroup; Assert-AdoSecurityGroupSid -Sid $sid; Add-Check 'ProtectorSid' $true $sid; Add-Check 'ProvisioningIdentity' (Test-AdoCurrentTokenSid -Sid $sid) 'Current token must contain the protector group SID.' } catch { Add-Check 'ProtectorSid' $false $_.Exception.Message }
+    $sid = $null
+    $protectorIsSecurityGroup = $false
+    try {
+        $sid = Resolve-AdoGroupSid -Identity $ProtectorGroup
+        Add-Check 'ProtectorSid' $true "Identity=$ProtectorGroup SID=$sid"
+    }
+    catch { Add-Check 'ProtectorSid' $false $_.Exception.Message }
+    if ($sid) {
+        try {
+            Assert-AdoSecurityGroupSid -Sid $sid
+            $protectorIsSecurityGroup = $true
+            Add-Check 'ProtectorSecurityGroup' $true 'The protector is a security-enabled Active Directory group.'
+        }
+        catch { Add-Check 'ProtectorSecurityGroup' $false $_.Exception.Message }
+    }
+    if ($protectorIsSecurityGroup) {
+        $inCurrentToken = Test-AdoCurrentTokenSid -Sid $sid
+        $tokenDetail = if ($inCurrentToken) { 'The current logon token contains the protector group SID.' } else { "The current logon token does not contain '$ProtectorGroup' ($sid). Add the administrator to the group, then sign out and sign back in." }
+        Add-Check 'ProvisioningIdentity' $inCurrentToken $tokenDetail
+    }
     foreach ($file in @('.agent', '.credentials', '.credentials_rsaparams', '.service')) { Add-Check "AgentFile:$file" (Test-Path -LiteralPath (Join-Path $AgentRoot $file) -PathType Leaf) (Join-Path $AgentRoot $file) }
     try {
         $group = Get-ClusterGroup -Name $ClusterRoleName
