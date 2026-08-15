@@ -345,8 +345,8 @@ function Set-AdoNodeService {
                 Name = [string]$definition.Name
                 DisplayName = [string]$definition.DisplayName
                 PathName = [string]$definition.PathName
-                ServiceType = 16
-                ErrorControl = 1
+                ServiceType = [byte]16
+                ErrorControl = [byte]1
                 StartMode = 'Manual'
                 DesktopInteract = $false
                 StartName = $account

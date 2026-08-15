@@ -18,6 +18,7 @@ For new-agent bootstrap failures, also record the nonsecret `phase`, `lastFailur
 | `ProtectorSid` | use a domain-qualified Active Directory group such as `CONTOSO\AdoAgentKeyRecoveryOperators`; local groups are not valid DPAPI-NG recovery principals |
 | `ProtectorSecurityGroup` | the resolved AD object is not a security-enabled group; use a security group rather than a distribution group |
 | `ProvisioningIdentity` | add the setup administrator to the protector group, then sign out and sign back in so the new SID is present in the logon token |
+| `Type mismatch for parameter "ServiceType"` | resume with a toolkit release that passes the unsigned byte types required by `Win32_Service.Create`; retain the same ConfigId because matching escrow and rollback artifacts are safely reused |
 | unable to disable independent service recovery | keep the registered service stopped and resume with a corrected toolkit release; the recovery-action call must pass an explicit quoted empty `actions=` value to `sc.exe` under Windows PowerShell 5.1 |
 | `.agent` metadata is not valid JSON during inspection | preserve the Microsoft-generated file and resume with a BOM-aware toolkit release; do not rewrite the registration metadata or re-register the agent merely to change its encoding |
 | agent not Offline | `--preventServiceStart` guarantee could not be verified; stop services, check for another listener with the same name, and do not cluster it |

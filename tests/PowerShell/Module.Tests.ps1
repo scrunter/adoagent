@@ -74,6 +74,16 @@ Describe 'AdoAgentClusterKey module contract' {
         }
     }
 
+    It 'uses the exact unsigned byte types required by Win32_Service.Create' {
+        $createMethod = (Get-CimClass -ClassName Win32_Service).CimClassMethods['Create']
+        $createMethod.Parameters['ServiceType'].CimType | Should -Be 'UInt8'
+        $createMethod.Parameters['ErrorControl'].CimType | Should -Be 'UInt8'
+
+        $source = Get-Content -LiteralPath $modulePath -Raw
+        $source | Should -Match 'ServiceType\s*=\s*\[byte\]16'
+        $source | Should -Match 'ErrorControl\s*=\s*\[byte\]1'
+    }
+
     It 'makes reseal and purge explicit and restores rollback state' {
         $source = Get-Content -LiteralPath $modulePath -Raw
         $source | Should -Match 'if \(\$Reseal\)'
