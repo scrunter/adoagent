@@ -57,7 +57,20 @@ if ($disk.OwnerNode.Name -ne $env:COMPUTERNAME -or $group.OwnerNode.Name -ne $en
     throw "Run this installer on current role/disk owner '$($disk.OwnerNode.Name)'."
 }
 
-$nodes = @($disk | Get-ClusterOwnerNode | ForEach-Object { $_.Name } | Sort-Object -Unique)
+$ownerNodeList = $disk | Get-ClusterOwnerNode
+if ($null -eq $ownerNodeList -or $null -eq $ownerNodeList.PSObject.Properties['OwnerNodes']) {
+    throw "Get-ClusterOwnerNode returned an unexpected result for '$SharedDiskResourceName'."
+}
+$nodes = @(
+    $ownerNodeList.OwnerNodes |
+        ForEach-Object {
+            if ($_ -is [string]) { $_ }
+            elseif ($null -ne $_.PSObject.Properties['Name']) { [string]$_.Name }
+            else { [string]$_ }
+        } |
+        Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+        Sort-Object -Unique
+)
 if ($nodes.Count -eq 0) {
     throw "Shared disk resource '$SharedDiskResourceName' has no possible owner nodes."
 }

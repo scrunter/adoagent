@@ -48,7 +48,7 @@ Describe 'AdoAgentClusterKey WSFC installation' {
 
     It 'aligns possible owners with the requested nodes' {
         foreach ($resourceName in @($KeyResourceName, $ServiceResourceName)) {
-            $owners = @(Get-ClusterResource -Name $resourceName | Get-ClusterOwnerNode | Select-Object -ExpandProperty Name)
+            $owners = @((Get-ClusterResource -Name $resourceName | Get-ClusterOwnerNode).OwnerNodes | ForEach-Object { [string]$_ })
             @($owners | Sort-Object) -join ',' | Should -Be (@($Node | Sort-Object) -join ',')
         }
     }
