@@ -149,7 +149,7 @@ In order, the script and module:
 11. create or repair the Generic Script and Generic Service resources, additive dependencies, timing values, separate Resource Monitor, and possible owners; and
 12. stop the complete clustered role and return `RoleState: Offline`.
 
-No plaintext RSA key is written to disk. The escrow envelope is copied only to a unique node temporary directory during sealing and is removed in `finally`. Ordinary WinRM cannot perform DPAPI-NG's domain-controller second hop, so passive sealing requires `ProvisioningCredential`; its SID receives temporary access only to the sealing/config directories and that access is removed before completion.
+No plaintext RSA key is written to disk. The escrow envelope is copied only to a unique node temporary directory during sealing and is removed in `finally`. Ordinary WinRM cannot perform DPAPI-NG's domain-controller second hop, so passive sealing requires `ProvisioningCredential`. The helper receives it through an anonymous stdin pipe, uses `LogonUser` to impersonate only the DPAPI-NG unwrap, zeroes credential buffers, and reverts before writing the node-bound classic-DPAPI ciphertext. No temporary filesystem ACE for the provisioning account is required.
 
 ## Review before first start
 

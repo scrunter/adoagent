@@ -40,7 +40,7 @@ Before setup:
 7. Verify the toolkit ZIP SHA-256 against the approved deployment record, then validate its internal release manifest.
 8. Supply an already authorized short-lived registration token from the deployment system.
 
-Acquire `ProvisioningCredential` in memory for an account in the DPAPI-NG protector group. It is used only to run the helper under a fresh authenticated domain logon on passive nodes, avoiding the WinRM second-hop failure without enabling CredSSP. It is never written to setup state, SCM, a file, or a process command line. For a regular domain service identity, separately pass a `ServiceCredential`; built-in identities and gMSAs do not accept a service password.
+Acquire `ProvisioningCredential` in memory for an account in the DPAPI-NG protector group, using `DOMAIN\user` or `user@domain` format. On passive nodes, the elevated helper receives it through an anonymous standard-input pipe, calls `LogonUser`, and impersonates only the DPAPI-NG unwrap. This avoids the WinRM second-hop failure without enabling CredSSP or launching a process into the WinRM window station under alternate credentials. The credential is never written to setup state, SCM, a file, or a process command line. For a regular domain service identity, separately pass a `ServiceCredential`; built-in identities and gMSAs do not accept a service password.
 
 ## Azure DevOps Services example
 

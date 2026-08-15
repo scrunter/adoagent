@@ -38,6 +38,7 @@ internal static class Program
                     command.RequiredGuid("config-id"),
                     command.Required("output"),
                     command.Has("force")),
+                "seal-delegated" => SealDelegated(command),
                 "install-sealed" => operations.InstallSealed(
                     command.Required("sealed"),
                     command.Required("manifest"),
@@ -87,9 +88,22 @@ internal static class Program
                 "export --agent-root <path> --protector-sid <sid> --envelope <path> --manifest <path> [--force] [--json]",
                 "seal --envelope <path> --manifest <path> --config-id <guid> [--force] [--json]",
                 "seal-staging --envelope <path> --manifest <path> --config-id <guid> --output <path> [--force] [--json]",
+                "seal-delegated --envelope <path> --manifest <path> --config-id <guid> --output <path> [--force] [--json]",
                 "install-sealed --sealed <path> --manifest <path> --config-id <guid> [--force] [--json]",
                 "activate --config-id <guid> [--json]",
                 "probe --config-id <guid> --mode quick|full [--json]",
             },
         });
+
+    private static OperationResult SealDelegated(CommandLine command)
+    {
+        using Microsoft.Win32.SafeHandles.SafeAccessTokenHandle token = DelegatedCredentialLogon.ReadAndLogon();
+        return new KeyOperations(new NativeDataProtector(), enforceSealedKeyAcl: false).Seal(
+            command.Required("envelope"),
+            command.Required("manifest"),
+            command.RequiredGuid("config-id"),
+            command.Required("output"),
+            command.Has("force"),
+            token);
+    }
 }

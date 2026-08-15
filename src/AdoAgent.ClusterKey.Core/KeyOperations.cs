@@ -1,3 +1,4 @@
+using Microsoft.Win32.SafeHandles;
 using System.Security.Cryptography;
 using System.Security.Principal;
 
@@ -104,7 +105,8 @@ public sealed class KeyOperations(IDataProtector protector, bool enforceSealedKe
         string manifestPath,
         Guid configId,
         string? outputPath,
-        bool overwrite)
+        bool overwrite,
+        SafeAccessTokenHandle? descriptorUnprotectToken = null)
     {
         EscrowManifest manifest = JsonContracts.ReadManifest(manifestPath);
         if (!File.Exists(envelopePath))
@@ -130,7 +132,9 @@ public sealed class KeyOperations(IDataProtector protector, bool enforceSealedKe
         RsaKeyDocument? keyDocument = null;
         try
         {
-            plaintext = _protector.UnprotectDescriptor(envelope);
+            plaintext = descriptorUnprotectToken is null
+                ? _protector.UnprotectDescriptor(envelope)
+                : UnprotectDescriptorAs(manifest, envelope, descriptorUnprotectToken);
             keyDocument = RsaKeyDocument.Parse(plaintext);
             if (keyDocument.IsNamedContainer)
             {
@@ -181,6 +185,45 @@ public sealed class KeyOperations(IDataProtector protector, bool enforceSealedKe
             CryptographicOperations.ZeroMemory(plaintext);
             CryptographicOperations.ZeroMemory(sealedKey);
             keyDocument?.Clear();
+        }
+    }
+
+    private byte[] UnprotectDescriptorAs(
+        EscrowManifest manifest,
+        byte[] envelope,
+        SafeAccessTokenHandle token)
+    {
+        SecurityIdentifier expectedSid;
+        try { expectedSid = new SecurityIdentifier(manifest.ProtectorSid); }
+        catch (ArgumentException exception)
+        {
+            throw new ToolException(ExitCode.InvalidConfiguration, "The escrow manifest protector SID is invalid.", exception);
+        }
+
+        try
+        {
+            return WindowsIdentity.RunImpersonated(token, () =>
+            {
+                using WindowsIdentity identity = WindowsIdentity.GetCurrent(TokenAccessLevels.Query);
+                WindowsPrincipal principal = new(identity);
+                bool authorized = (identity.User is not null && expectedSid.Equals(identity.User)) ||
+                    principal.IsInRole(expectedSid);
+                if (!authorized)
+                {
+                    throw new ToolException(
+                        ExitCode.DpapiNgAuthorizationFailure,
+                        "The provisioning credential logon token does not contain the escrow protector SID.");
+                }
+
+                return _protector.UnprotectDescriptor(envelope);
+            });
+        }
+        catch (System.Security.SecurityException exception)
+        {
+            throw new ToolException(
+                ExitCode.DpapiNgAuthorizationFailure,
+                "Windows could not impersonate the provisioning credential token.",
+                exception);
         }
     }
 

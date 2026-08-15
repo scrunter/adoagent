@@ -84,9 +84,13 @@ Describe 'AdoAgentClusterKey module contract' {
         $end = $source.IndexOf('function Remove-AdoLegacySigningStateOnNode')
         $sealingSource = $source.Substring($start, $end - $start)
         $sealingSource | Should -Match 'Test-AdoNodeIsLocal'
-        $sealingSource | Should -Match 'Start-Process.+-Credential \$credential.+-WindowStyle Hidden'
+        $sealingSource | Should -Match 'seal-delegated'
+        $sealingSource | Should -Match 'RedirectStandardInput\s*=\s*\$true'
+        $sealingSource | Should -Match 'SecureStringToGlobalAllocUnicode'
+        $sealingSource | Should -Match 'ZeroFreeGlobalAllocUnicode'
+        $sealingSource | Should -Not -Match 'Start-Process.+-Credential'
         $sealingSource | Should -Not -Match 'GetNetworkCredential'
-        $sealingSource | Should -Not -Match '\.Password'
+        $sealingSource | Should -Not -Match 'PtrToString'
     }
 
     It 'recognizes short and fully qualified names for the local sealing node' {

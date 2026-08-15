@@ -22,7 +22,7 @@ Create a dedicated domain security group for DPAPI-NG recovery, for example `<do
 - Make membership changes subject to approval and directory auditing.
 - Ensure the initial operator's current logon token contains the group SID. Sign out/in after new membership; nested or just-added membership might not be in the current token.
 - Acquire a fresh in-memory `PSCredential` for an operator in this group when more than one node must be sealed. Ordinary WinRM does not delegate the operator's credentials for the domain-controller access required by DPAPI-NG. The toolkit starts only the remote sealing helper under this authenticated logon and does not persist the credential or enable CredSSP.
-- The provisioning operator must be permitted to log on to every possible owner, and the Secondary Logon service must not be disabled. The account does not become the ADO Windows service identity.
+- The provisioning operator must be permitted to log on locally to every possible owner. Supply its name as `DOMAIN\user` or `user@domain`; the account does not become the ADO Windows service identity. The helper uses `LogonUser` directly, so the Secondary Logon service is not required.
 - Do not add the ADO service identity, cluster computer account, pipeline users, or general server administrators by default.
 
 DPAPI-NG SID protection requires domain controllers and AD connectivity when an envelope is protected/unprotected and authorization information is obtained. Runtime activation uses only classic local DPAPI and has no domain or escrow dependency.
