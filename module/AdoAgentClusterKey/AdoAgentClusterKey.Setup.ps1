@@ -604,7 +604,7 @@ function Get-AdoServiceIdentityChecks {
         $checks.Add([pscustomobject]@{ Name = 'ServiceAgentRootAccess'; Passed = $hasAccess; Detail = "An explicit inheritable Modify ACE for '$ServiceIdentity' is required on '$aclPath'." })
     }
     catch { $checks.Add([pscustomobject]@{ Name = 'ServiceAgentRootAccess'; Passed = $false; Detail = $_.Exception.Message }) }
-    return @($checks)
+    return $checks.ToArray()
 }
 
 function Get-AdoSetupImmutableData {

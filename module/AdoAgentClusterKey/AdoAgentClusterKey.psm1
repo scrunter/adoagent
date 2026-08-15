@@ -584,7 +584,7 @@ function Test-AdoAgentClusterPrerequisite {
         }
     }
     $passed = @($checks | Where-Object { -not $_.Passed }).Count -eq 0
-    $result = [pscustomobject]@{ Passed = $passed; Checks = @($checks); Nodes = @($Node) }
+    $result = [pscustomobject]@{ Passed = $passed; Checks = $checks.ToArray(); Nodes = @($Node) }
     if ($ThrowOnFailure -and -not $passed) { throw "Prerequisite checks failed: $((@($checks | Where-Object { -not $_.Passed } | ForEach-Object { $_.Name })) -join ', ')" }
     return $result
 }
@@ -1027,13 +1027,13 @@ function Invoke-AdoAgentClusterEvaluation {
     $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
     $jsonPath = Join-Path $OutputPath "evaluation-$timestamp.json"
     $markdownPath = Join-Path $OutputPath "evaluation-$timestamp.md"
-    $summary = [pscustomobject]@{ SchemaVersion = 1; ConfigId = $ConfigId.ToString('D'); GeneratedUtc = [DateTime]::UtcNow.ToString('o'); Passed = @($records | Where-Object { -not $_.Passed }).Count -eq 0; Evidence = @($records) }
+    $summary = [pscustomobject]@{ SchemaVersion = 1; ConfigId = $ConfigId.ToString('D'); GeneratedUtc = [DateTime]::UtcNow.ToString('o'); Passed = @($records | Where-Object { -not $_.Passed }).Count -eq 0; Evidence = $records.ToArray() }
     $summary | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $jsonPath -Encoding UTF8
     $lines = @('# ADO Agent Cluster Evaluation', '', "- ConfigId: ``$ConfigId``", "- Generated UTC: $($summary.GeneratedUtc)", "- Overall: $(if ($summary.Passed) { 'GO' } else { 'NO-GO' })", '', '| Test | Result | Detail |', '|---|---:|---|')
     foreach ($record in $records) { $lines += "| $($record.Test) | $(if ($record.Passed) { 'PASS' } else { 'FAIL' }) | $($record.Detail -replace '\|','/') |" }
     $lines += @('', '## Gate interpretation', '', 'GO requires every selected test to pass, each planned move to complete within 300 seconds, the key and service resources to be Online, and any supplied pool/canary probes to pass. In-flight jobs are not resumable.')
     Set-Content -LiteralPath $markdownPath -Value $lines -Encoding UTF8
-    [pscustomobject]@{ Passed = $summary.Passed; JsonPath = $jsonPath; MarkdownPath = $markdownPath; Evidence = @($records) }
+    [pscustomobject]@{ Passed = $summary.Passed; JsonPath = $jsonPath; MarkdownPath = $markdownPath; Evidence = $records.ToArray() }
 }
 
 Export-ModuleMember -Function @(

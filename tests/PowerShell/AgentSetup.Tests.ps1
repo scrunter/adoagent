@@ -116,6 +116,41 @@ Describe 'Deployment-authenticated agent setup contract' {
             (Get-AdoServiceIdentityForWindows -Identity 'LocalSystem') | Should -Be 'NT AUTHORITY\SYSTEM'
         }
     }
+
+    It 'returns built-in service identity checks under Windows PowerShell 5.1' {
+        $global:AdoSetupAgentRoot = Join-Path $TestDrive 'service-identity-agent-root'
+        New-Item -ItemType Directory -Path $global:AdoSetupAgentRoot | Out-Null
+        try {
+            InModuleScope AdoAgentClusterKey {
+                Mock Invoke-Command { [pscustomobject]@{ Sid = 'S-1-5-20'; HasLogonRight = $true } }
+                Mock Test-AdoPathAclForIdentity { $true }
+
+                $checks = @(Get-AdoServiceIdentityChecks `
+                    -ServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' `
+                    -Node @('node-a', 'node-b') `
+                    -AgentRoot $global:AdoSetupAgentRoot)
+
+                $checks.Count | Should -Be 5
+                @($checks | Where-Object { -not $_.Passed }).Count | Should -Be 0
+                @($checks.Name) | Should -Contain 'ServiceIdentity:node-a'
+                @($checks.Name) | Should -Contain 'ServiceIdentity:node-b'
+                @($checks.Name) | Should -Contain 'ServiceAgentRootAccess'
+            }
+        }
+        finally {
+            Remove-Variable -Name AdoSetupAgentRoot -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'does not wrap generic lists in the incompatible array subexpression' {
+        $setupSource = Get-Content -LiteralPath $setupModulePath -Raw
+        $moduleSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $setupModulePath) 'AdoAgentClusterKey.psm1') -Raw
+        $setupSource | Should -Not -Match 'return @\(\$checks\)'
+        $moduleSource | Should -Not -Match 'Checks = @\(\$checks\)'
+        $moduleSource | Should -Not -Match 'Evidence = @\(\$records\)'
+        $setupSource | Should -Match '\$checks\.ToArray\(\)'
+        $moduleSource | Should -Match '\$records\.ToArray\(\)'
+    }
 }
 
 Describe 'Agent package extraction security' {
