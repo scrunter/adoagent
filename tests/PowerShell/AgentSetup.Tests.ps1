@@ -96,6 +96,86 @@ Describe 'Deployment-authenticated agent setup contract' {
         }
     }
 
+    It 'selects a singleton package from wrapped and bare API responses' {
+        $global:AdoSetupPackageResponses = @(
+            '{"count":1,"value":[{"version":"4.999.1","downloadUrl":"https://vstsagentpackage.azureedge.net/agent/test.zip"}]}',
+            '{"version":"4.999.1","downloadUrl":"https://vstsagentpackage.azureedge.net/agent/test.zip"}'
+        )
+        try {
+            InModuleScope AdoAgentClusterKey {
+                foreach ($content in $global:AdoSetupPackageResponses) {
+                    $global:AdoSetupCurrentResponse = $content
+                    Mock Invoke-AdoHttpGet { [pscustomobject]@{ Content = $global:AdoSetupCurrentResponse } }
+                    $metadata = Get-AdoAgentPackageMetadata `
+                        -BaseUri ([Uri]'https://dev.azure.com/example/') `
+                        -ServerType Services `
+                        -RegistrationAuth PersonalAccessToken `
+                        -RegistrationSecret 'sentinel'
+                    $metadata.Version | Should -Be '4.999.1'
+                    $metadata.DownloadUri.AbsoluteUri | Should -Be 'https://vstsagentpackage.azureedge.net/agent/test.zip'
+                }
+            }
+        }
+        finally {
+            Remove-Variable -Name AdoSetupPackageResponses -Scope Global -ErrorAction SilentlyContinue
+            Remove-Variable -Name AdoSetupCurrentResponse -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'rejects empty and ambiguous package API responses without strict-mode errors' {
+        $global:AdoSetupPackageResponses = @(
+            '{"count":0,"value":[]}',
+            '{"count":2,"value":[{"version":"4.999.1","downloadUrl":"https://vstsagentpackage.azureedge.net/agent/one.zip"},{"version":"4.999.2","downloadUrl":"https://vstsagentpackage.azureedge.net/agent/two.zip"}]}'
+        )
+        try {
+            InModuleScope AdoAgentClusterKey {
+                foreach ($content in $global:AdoSetupPackageResponses) {
+                    $global:AdoSetupCurrentResponse = $content
+                    Mock Invoke-AdoHttpGet { [pscustomobject]@{ Content = $global:AdoSetupCurrentResponse } }
+                    {
+                        Get-AdoAgentPackageMetadata `
+                            -BaseUri ([Uri]'https://dev.azure.com/example/') `
+                            -ServerType Services `
+                            -RegistrationAuth PersonalAccessToken `
+                            -RegistrationSecret 'sentinel'
+                    } | Should -Throw '*exactly one compatible*'
+                }
+            }
+        }
+        finally {
+            Remove-Variable -Name AdoSetupPackageResponses -Scope Global -ErrorAction SilentlyContinue
+            Remove-Variable -Name AdoSetupCurrentResponse -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'keeps singleton pool and agent query results as arrays' {
+        $global:AdoSetupApiResponse = '{"count":1,"value":[{"id":42,"name":"test"}]}'
+        try {
+            InModuleScope AdoAgentClusterKey {
+                Mock Invoke-AdoHttpGet { [pscustomobject]@{ Content = $global:AdoSetupApiResponse } }
+                $pool = Get-AdoManagedAgentPool `
+                    -BaseUri ([Uri]'https://dev.azure.com/example/') `
+                    -PoolName 'test' `
+                    -ServerType Services `
+                    -RegistrationAuth PersonalAccessToken `
+                    -RegistrationSecret 'sentinel'
+                $pool.id | Should -Be 42
+
+                $agent = Get-AdoExistingAgent `
+                    -BaseUri ([Uri]'https://dev.azure.com/example/') `
+                    -PoolId 42 `
+                    -AgentName 'test' `
+                    -ServerType Services `
+                    -RegistrationAuth PersonalAccessToken `
+                    -RegistrationSecret 'sentinel'
+                $agent.id | Should -Be 42
+            }
+        }
+        finally {
+            Remove-Variable -Name AdoSetupApiResponse -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'restricts service URLs and external package hosts' {
         InModuleScope AdoAgentClusterKey {
             $base = Get-AdoNormalizedServerUri -AzureDevOpsUrl 'https://dev.azure.com/example' -ServerType Services
