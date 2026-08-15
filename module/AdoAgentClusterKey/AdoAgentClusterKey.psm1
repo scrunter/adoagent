@@ -627,8 +627,45 @@ function Remove-AdoLegacySigningStateOnNode {
 
 function Set-AdoClusterPrivateParameter {
     param($Resource, [string]$Name, $Value)
+    $updateFailure = $null
     try { $Resource | Set-ClusterParameter -Name $Name -Value $Value -ErrorAction Stop | Out-Null }
-    catch { $Resource | Set-ClusterParameter -Name $Name -Value $Value -Create -ErrorAction Stop | Out-Null }
+    catch {
+        $updateFailure = $_.Exception.Message
+        try { $Resource | Set-ClusterParameter -Name $Name -Value $Value -Create -ErrorAction Stop | Out-Null }
+        catch {
+            throw "Unable to set private cluster property '$Name' on '$($Resource.Name)'. Update failed: $updateFailure Create failed: $($_.Exception.Message)"
+        }
+    }
+    try {
+        $saved = $Resource | Get-ClusterParameter -Name $Name -ErrorAction Stop
+        if ([string]$saved.Value -cne [string]$Value) {
+            throw 'WSFC returned a different value after the update.'
+        }
+    }
+    catch {
+        throw "Unable to verify private cluster property '$Name' on '$($Resource.Name)'. $($_.Exception.Message)"
+    }
+}
+
+function Set-AdoClusterCommonProperty {
+    param(
+        [Parameter(Mandatory = $true)]$Resource,
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][uint32]$Value
+    )
+    try {
+        if ($null -eq $Resource.PSObject.Properties[$Name]) {
+            throw 'The installed FailoverClusters module does not expose this common property.'
+        }
+        $Resource.$Name = $Value
+        $refreshed = Get-ClusterResource -Name ([string]$Resource.Name) -ErrorAction Stop
+        if ([uint32]$refreshed.$Name -ne $Value) {
+            throw "WSFC returned '$($refreshed.$Name)' after the update."
+        }
+    }
+    catch {
+        throw "Unable to set common cluster property '$Name' to '$Value' on '$($Resource.Name)'. $($_.Exception.Message)"
+    }
 }
 
 function Ensure-AdoDependency {
@@ -657,17 +694,17 @@ function Set-AdoClusterResources {
     if ($key.ResourceType -ne 'Generic Script') { throw "'$KeyResourceName' exists but is not a Generic Script resource." }
     Set-AdoClusterPrivateParameter -Resource $key -Name 'ScriptFilePath' -Value $script:ScriptPath
     Set-AdoClusterPrivateParameter -Resource $key -Name 'ConfigId' -Value $ConfigId.ToString('D')
-    $key.PendingTimeout = 60000
-    $key.LooksAlivePollInterval = 15000
-    $key.IsAlivePollInterval = 60000
-    $key.RestartAction = 1
+    Set-AdoClusterCommonProperty -Resource $key -Name 'PendingTimeout' -Value 60000
+    Set-AdoClusterCommonProperty -Resource $key -Name 'LooksAlivePollInterval' -Value 15000
+    Set-AdoClusterCommonProperty -Resource $key -Name 'IsAlivePollInterval' -Value 60000
+    Set-AdoClusterCommonProperty -Resource $key -Name 'RestartAction' -Value 1
 
     $service = Get-AdoResourceOrNull -Name $ServiceResourceName
     if ($null -eq $service) { $service = Add-ClusterResource -Name $ServiceResourceName -ResourceType 'Generic Service' -Group $RoleName -SeparateMonitor }
     if ($service.ResourceType -ne 'Generic Service') { throw "'$ServiceResourceName' exists but is not a Generic Service resource." }
     Set-AdoClusterPrivateParameter -Resource $service -Name 'ServiceName' -Value $ServiceName
-    $service.PendingTimeout = 60000
-    $service.RestartAction = 1
+    Set-AdoClusterCommonProperty -Resource $service -Name 'PendingTimeout' -Value 60000
+    Set-AdoClusterCommonProperty -Resource $service -Name 'RestartAction' -Value 1
 
     Ensure-AdoDependency -Resource $key -Provider $disk
     Ensure-AdoDependency -Resource $service -Provider $key
