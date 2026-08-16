@@ -33,18 +33,36 @@ Before setup:
 
 1. Create the WSFC role and shared disk and make the disk Online on the node running setup.
 2. Keep every existing key-selector or ADO service resource Offline and confirm no job is running.
-3. Create an absent or empty shared `AgentRoot`. Reject all reparse points in its ancestry.
-4. Grant the selected service identity an explicit inheritable Modify ACE on `AgentRoot`, or on its existing parent if the root is absent.
+3. Select an absent or empty shared `AgentRoot`. Setup creates it and missing parents, rejects reparse points in its existing ancestry, and applies the service identity's inheritable Modify ACL.
+4. Ensure the setup administrator can create directories on the shared disk.
 5. Grant `Log on as a service` on every possible owner. Built-in service identities do not require an explicit assignment; gMSAs and domain users do.
-6. Pre-create the administrator-only escrow directory outside the shared/runtime filesystem.
+6. Select an administrator-only escrow directory outside the shared/runtime filesystem, or use the unique default `C:\AdoAgentClusterKeyEscrow\<ConfigId>`. Setup creates it when missing and replaces its DACL with the protected recovery ACL.
 7. Verify the toolkit ZIP SHA-256 against the approved deployment record, then validate its internal release manifest.
 8. Supply an already authorized short-lived registration token from the deployment system.
 
-Acquire `ProvisioningCredential` in memory for an account in the DPAPI-NG protector group, using `DOMAIN\user` or `user@domain` format. On passive nodes, the elevated helper receives it through an anonymous standard-input pipe, calls `LogonUser`, and impersonates only the DPAPI-NG unwrap. This avoids the WinRM second-hop failure without enabling CredSSP or launching a process into the WinRM window station under alternate credentials. The credential is never written to setup state, SCM, a file, or a process command line. For a regular domain service identity, separately pass a `ServiceCredential`; built-in identities and gMSAs do not accept a service password.
+For a fresh attended run, omit `ProvisioningCredential` and the entry script securely prompts for the current Windows identity's password. To use another approved operator or to automate setup, supply an in-memory `PSCredential` using `DOMAIN\user` or `user@domain` format. On passive nodes, the elevated helper receives it through an anonymous standard-input pipe, calls `LogonUser`, and impersonates only the DPAPI-NG unwrap. This avoids the WinRM second-hop failure without enabling CredSSP or launching a process into the WinRM window station under alternate credentials. The credential is never written to setup state, SCM, a file, or a process command line. For a regular domain service identity, separately pass a `ServiceCredential`; built-in identities and gMSAs do not accept a service password.
 
 ## Azure DevOps Services example
 
-The deployment system exposes its short-lived token as a secret environment variable. The value is not included in arguments. The setup process removes the variable after reading it, except during `-WhatIf`, when no child process is created.
+For the normal attended PAT and Network Service setup, omit the common defaults. This single command prompts securely for the PAT and the current protector-group operator's password:
+
+```powershell
+& '<release-folder>\Initialize-AdoAgentCluster.ps1' `
+  -AzureDevOpsUrl 'https://dev.azure.com/<organization>' `
+  -PoolName '<pool>' `
+  -AgentName '<logical-agent-name>' `
+  -AgentRoot '<shared-disk>:\AdoAgent' `
+  -ClusterRoleName '<existing-role>' `
+  -SharedDiskResourceName '<existing-disk-resource>' `
+  -ProtectorGroup '<domain>\<dpapi-ng-operator-group>' `
+  -ConfirmAgentIdle
+```
+
+Defaults are `ServerType=Services`, `RegistrationAuth=PersonalAccessToken`, `ServiceAccount=NT AUTHORITY\NETWORK SERVICE`, `WorkDirectory=_work`, and `EscrowPath=C:\AdoAgentClusterKeyEscrow\<ConfigId>`. Setup discovers the disk's possible owners, generates a ConfigId, derives both resource names, creates the directories, and applies and verifies the required ACLs. Supply any of those parameters explicitly to override a default.
+
+For automated OAuth deployment, the deployment system exposes its short-lived token as a secret environment variable. The value is not included in arguments:
+
+The setup process removes the variable after reading it, except during `-WhatIf`, when no child process is created.
 
 ```powershell
 $configId = [Guid]::NewGuid()
@@ -72,7 +90,7 @@ $provisioningCredential = Get-Credential -UserName '<domain>\<dpapi-ng-operator>
 
 When an Azure DevOps pipeline supplies `System.AccessToken`, explicitly map it to the process environment as a secret and grant the corresponding deployment/build-service identity pool administration before the run. The toolkit does not make that assignment.
 
-Use `-RegistrationToken (Read-Host -AsSecureString)` for an attended token source. Never put the value after a script parameter.
+Fresh attended setup securely prompts when neither token input is supplied. You may still use `-RegistrationToken (Read-Host -AsSecureString)` explicitly. Never put the token value after a script parameter.
 
 ## Azure DevOps Server examples
 
