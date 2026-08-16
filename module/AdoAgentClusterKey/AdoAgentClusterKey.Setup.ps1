@@ -126,7 +126,13 @@ function Get-AdoCanonicalPath {
 function Assert-AdoNoReparsePoint {
     param([Parameter(Mandatory = $true)][string]$Path, [switch]$AllowMissingLeaf)
     $candidate = Get-AdoCanonicalPath -Path $Path
-    if ($AllowMissingLeaf -and -not (Test-Path -LiteralPath $candidate)) { $candidate = Split-Path -Parent $candidate }
+    if ($AllowMissingLeaf) {
+        while (-not [string]::IsNullOrWhiteSpace($candidate) -and -not (Test-Path -LiteralPath $candidate)) {
+            $parent = Split-Path -Parent $candidate
+            if ([string]::IsNullOrWhiteSpace($parent) -or $parent -eq $candidate) { break }
+            $candidate = $parent
+        }
+    }
     while (-not [string]::IsNullOrWhiteSpace($candidate) -and (Test-Path -LiteralPath $candidate)) {
         $item = Get-Item -LiteralPath $candidate -Force
         if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
@@ -553,7 +559,8 @@ function Test-AdoPathAclForIdentity {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Identity,
-        [switch]$UsingParent
+        [switch]$UsingParent,
+        [switch]$RequireInheritance
     )
     $windowsIdentity = Get-AdoServiceIdentityForWindows -Identity $Identity
     $sid = (New-Object Security.Principal.NTAccount($windowsIdentity)).Translate([Security.Principal.SecurityIdentifier])
@@ -563,6 +570,9 @@ function Test-AdoPathAclForIdentity {
     foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
         if ($rule.IdentityReference.Value -ne $sid.Value) { continue }
         if ($UsingParent -and (($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -eq 0)) { continue }
+        if ($RequireInheritance -and (
+            ($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -eq 0 -or
+            ($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ObjectInherit) -eq 0)) { continue }
         if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny) { $deny = $deny -bor $rule.FileSystemRights }
         else { $allow = $allow -bor $rule.FileSystemRights }
     }
@@ -571,11 +581,115 @@ function Test-AdoPathAclForIdentity {
     return (($effective -band $required) -eq $required)
 }
 
+function Invoke-AdoIcacls {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+    $icacls = Join-Path $env:SystemRoot 'System32\icacls.exe'
+    & $icacls $Path @Arguments 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to apply the required ACL to '$Path'; icacls exited with code $LASTEXITCODE."
+    }
+}
+
+function Test-AdoEscrowAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$Path,
+        [Parameter(Mandatory = $true)][string[]]$RequiredSid
+    )
+    $acl = Get-Acl -LiteralPath $Path
+    if (-not $acl.AreAccessRulesProtected) { return $false }
+    $requiredSidSet = @{}
+    foreach ($sid in $RequiredSid) { $requiredSidSet[$sid] = $true }
+    foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+        if (-not $requiredSidSet.ContainsKey($rule.IdentityReference.Value)) { return $false }
+    }
+    foreach ($sid in $RequiredSid) {
+        $allow = [Security.AccessControl.FileSystemRights]0
+        $deny = [Security.AccessControl.FileSystemRights]0
+        $inheritable = $false
+        foreach ($rule in $acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier])) {
+            if ($rule.IdentityReference.Value -ne $sid) { continue }
+            if ($rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny) { $deny = $deny -bor $rule.FileSystemRights }
+            else {
+                $allow = $allow -bor $rule.FileSystemRights
+                if (($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ContainerInherit) -ne 0 -and
+                    ($rule.InheritanceFlags -band [Security.AccessControl.InheritanceFlags]::ObjectInherit) -ne 0) {
+                    $inheritable = $true
+                }
+            }
+        }
+        $effective = $allow -band (-bnot $deny)
+        $required = [Security.AccessControl.FileSystemRights]::FullControl
+        if (($effective -band $required) -ne $required -or -not $inheritable) { return $false }
+    }
+    return $true
+}
+
+function Initialize-AdoSetupDirectories {
+    param(
+        [Parameter(Mandatory = $true)][string]$AgentRoot,
+        [Parameter(Mandatory = $true)][string]$EscrowPath,
+        [Parameter(Mandatory = $true)][string]$ServiceIdentity,
+        [Parameter(Mandatory = $true)][string]$ProtectorSid
+    )
+    Assert-AdoNoReparsePoint -Path $AgentRoot -AllowMissingLeaf
+    Assert-AdoNoReparsePoint -Path $EscrowPath -AllowMissingLeaf
+
+    $agentRootCreated = $false
+    if (Test-Path -LiteralPath $AgentRoot) {
+        if (-not (Test-Path -LiteralPath $AgentRoot -PathType Container)) { throw "AgentRoot '$AgentRoot' exists but is not a directory." }
+    }
+    else {
+        [IO.Directory]::CreateDirectory($AgentRoot) | Out-Null
+        $agentRootCreated = $true
+    }
+    Assert-AdoNoReparsePoint -Path $AgentRoot
+
+    $windowsIdentity = Get-AdoServiceIdentityForWindows -Identity $ServiceIdentity
+    $serviceSid = (New-Object Security.Principal.NTAccount($windowsIdentity)).Translate([Security.Principal.SecurityIdentifier]).Value
+    Invoke-AdoIcacls -Path $AgentRoot -Arguments @('/grant:r', ('*{0}:(OI)(CI)M' -f $serviceSid))
+    if (-not (Test-AdoPathAclForIdentity -Path $AgentRoot -Identity $ServiceIdentity -RequireInheritance)) {
+        throw "AgentRoot ACL preparation did not grant Modify access to '$ServiceIdentity'."
+    }
+
+    $escrowCreated = $false
+    if (Test-Path -LiteralPath $EscrowPath) {
+        if (-not (Test-Path -LiteralPath $EscrowPath -PathType Container)) { throw "EscrowPath '$EscrowPath' exists but is not a directory." }
+    }
+    else {
+        [IO.Directory]::CreateDirectory($EscrowPath) | Out-Null
+        $escrowCreated = $true
+    }
+    Assert-AdoNoReparsePoint -Path $EscrowPath
+
+    if ($ProtectorSid -notmatch '^S-1-(?:\d+-){1,14}\d+$') { throw 'ProtectorSid is not a valid SID string.' }
+    $currentSid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+    [string[]]$escrowSids = @($ProtectorSid, $currentSid) | Sort-Object -Unique
+    [string[]]$escrowArguments = @('/inheritance:r', '/grant:r') + @($escrowSids | ForEach-Object { '*{0}:(OI)(CI)F' -f $_ })
+    Invoke-AdoIcacls -Path $EscrowPath -Arguments @('/reset')
+    Invoke-AdoIcacls -Path $EscrowPath -Arguments $escrowArguments
+    if (-not (Test-AdoEscrowAcl -Path $EscrowPath -RequiredSid $escrowSids)) {
+        throw 'EscrowPath ACL preparation did not establish protected Full Control for the current operator and DPAPI-NG protector group.'
+    }
+
+    return [pscustomobject]@{
+        AgentRoot = $AgentRoot
+        AgentRootCreated = $agentRootCreated
+        AgentRootServiceSid = $serviceSid
+        EscrowPath = $EscrowPath
+        EscrowCreated = $escrowCreated
+        EscrowTrusteeSids = $escrowSids
+    }
+}
+
 function Get-AdoServiceIdentityChecks {
     param(
         [Parameter(Mandatory = $true)][string]$ServiceIdentity,
         [Parameter(Mandatory = $true)][string[]]$Node,
-        [Parameter(Mandatory = $true)][string]$AgentRoot
+        [Parameter(Mandatory = $true)][string]$AgentRoot,
+        [switch]$SkipAgentRootAccess
     )
     $checks = New-Object System.Collections.Generic.List[object]
     $passwordlessBuiltin = $ServiceIdentity -in @('LocalSystem', 'NT AUTHORITY\SYSTEM', 'NT AUTHORITY\LOCAL SERVICE', 'NT AUTHORITY\NETWORK SERVICE')
@@ -605,13 +719,15 @@ function Get-AdoServiceIdentityChecks {
         }
         catch { $checks.Add([pscustomobject]@{ Name = "ServiceIdentity:$targetNode"; Passed = $false; Detail = $_.Exception.Message }) }
     }
-    try {
-        $aclPath = if (Test-Path -LiteralPath $AgentRoot -PathType Container) { $AgentRoot } else { Split-Path -Parent (Get-AdoCanonicalPath -Path $AgentRoot) }
-        $usingParent = -not (Test-Path -LiteralPath $AgentRoot -PathType Container)
-        $hasAccess = Test-AdoPathAclForIdentity -Path $aclPath -Identity $ServiceIdentity -UsingParent:$usingParent
-        $checks.Add([pscustomobject]@{ Name = 'ServiceAgentRootAccess'; Passed = $hasAccess; Detail = "An explicit inheritable Modify ACE for '$ServiceIdentity' is required on '$aclPath'." })
+    if (-not $SkipAgentRootAccess) {
+        try {
+            $aclPath = if (Test-Path -LiteralPath $AgentRoot -PathType Container) { $AgentRoot } else { Split-Path -Parent (Get-AdoCanonicalPath -Path $AgentRoot) }
+            $usingParent = -not (Test-Path -LiteralPath $AgentRoot -PathType Container)
+            $hasAccess = Test-AdoPathAclForIdentity -Path $aclPath -Identity $ServiceIdentity -UsingParent:$usingParent -RequireInheritance
+            $checks.Add([pscustomobject]@{ Name = 'ServiceAgentRootAccess'; Passed = $hasAccess; Detail = "An explicit inheritable Modify ACE for '$ServiceIdentity' is required on '$aclPath'." })
+        }
+        catch { $checks.Add([pscustomobject]@{ Name = 'ServiceAgentRootAccess'; Passed = $false; Detail = $_.Exception.Message }) }
     }
-    catch { $checks.Add([pscustomobject]@{ Name = 'ServiceAgentRootAccess'; Passed = $false; Detail = $_.Exception.Message }) }
     return $checks.ToArray()
 }
 
@@ -801,9 +917,9 @@ function Assert-AdoSetupClusterContext {
 function Initialize-AdoAgentCluster {
     [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
     param(
-        [Parameter(Mandatory = $true)][ValidateSet('Services', 'Server')][string]$ServerType,
+        [ValidateSet('Services', 'Server')][string]$ServerType = 'Services',
         [Parameter(Mandatory = $true)][string]$AzureDevOpsUrl,
-        [Parameter(Mandatory = $true)][ValidateSet('OAuthToken', 'PersonalAccessToken', 'Integrated', 'Negotiate')][string]$RegistrationAuth,
+        [ValidateSet('OAuthToken', 'PersonalAccessToken', 'Integrated', 'Negotiate')][string]$RegistrationAuth = 'PersonalAccessToken',
         [Security.SecureString]$RegistrationToken,
         [string]$RegistrationTokenEnvironmentVariableName,
         [System.Management.Automation.PSCredential]$RegistrationCredential,
@@ -814,7 +930,7 @@ function Initialize-AdoAgentCluster {
         [Parameter(Mandatory = $true)][string]$ClusterRoleName,
         [Parameter(Mandatory = $true)][string]$SharedDiskResourceName,
         [Parameter(Mandatory = $true)][string]$ProtectorGroup,
-        [Parameter(Mandatory = $true)][string]$EscrowPath,
+        [string]$EscrowPath,
         [Parameter(Mandatory = $true)][string]$ToolkitPackagePath,
         [string]$AgentPackagePath,
         [string]$AgentPackageSha256,
@@ -822,7 +938,7 @@ function Initialize-AdoAgentCluster {
         [Guid]$ConfigId = [Guid]::Empty,
         [string]$KeyResourceName,
         [string]$ServiceResourceName,
-        [Parameter(Mandatory = $true)][string]$ServiceAccount,
+        [string]$ServiceAccount = 'NT AUTHORITY\NETWORK SERVICE',
         [System.Management.Automation.PSCredential]$ServiceCredential,
         [System.Management.Automation.PSCredential]$ProvisioningCredential,
         [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
@@ -833,10 +949,13 @@ function Initialize-AdoAgentCluster {
     Assert-AdoElevated
     Import-Module FailoverClusters -ErrorAction Stop
     if (-not $ConfirmAgentIdle) { throw '-ConfirmAgentIdle is required and must be true.' }
+    if ($ConfigId -eq [Guid]::Empty) { $ConfigId = [Guid]::NewGuid() }
+    if ([string]::IsNullOrWhiteSpace($EscrowPath)) {
+        $EscrowPath = Join-Path (Join-Path $env:SystemDrive 'AdoAgentClusterKeyEscrow') $ConfigId.ToString('D')
+    }
     foreach ($requiredValue in @($PoolName, $AgentName, $AgentRoot, $ClusterRoleName, $SharedDiskResourceName, $ProtectorGroup, $EscrowPath, $ToolkitPackagePath, $ServiceAccount)) {
         if ([string]::IsNullOrWhiteSpace([string]$requiredValue)) { throw 'A required setup string is empty.' }
     }
-    if ($ConfigId -eq [Guid]::Empty) { $ConfigId = [Guid]::NewGuid() }
     if (-not $KeyResourceName) { $KeyResourceName = "$ClusterRoleName - Key Selector" }
     if (-not $ServiceResourceName) { $ServiceResourceName = "$ClusterRoleName - ADO Agent" }
     if (-not $Node) {
@@ -847,9 +966,8 @@ function Initialize-AdoAgentCluster {
     if ($Node.Count -eq 0) { throw 'At least one possible owner node is required.' }
     $baseUri = Get-AdoNormalizedServerUri -AzureDevOpsUrl $AzureDevOpsUrl -ServerType $ServerType -AllowInsecureServerUrl:$AllowInsecureServerUrl
     $resolvedAgentRoot = Get-AdoCanonicalPath -Path $AgentRoot
-    $resolvedEscrow = Get-AdoCanonicalPath -Path $EscrowPath -MustExist
+    $resolvedEscrow = Get-AdoCanonicalPath -Path $EscrowPath
     $resolvedToolkit = Get-AdoCanonicalPath -Path $ToolkitPackagePath -MustExist
-    if (-not (Test-Path -LiteralPath $resolvedEscrow -PathType Container)) { throw 'EscrowPath must be a pre-created directory.' }
     $agentRootVolume = [IO.Path]::GetPathRoot($resolvedAgentRoot).TrimEnd('\')
     if ($resolvedAgentRoot -eq $agentRootVolume) { throw 'AgentRoot must not be a volume root.' }
     if ($resolvedEscrow -eq $resolvedAgentRoot -or
@@ -858,7 +976,7 @@ function Initialize-AdoAgentCluster {
         throw 'EscrowPath must be outside AgentRoot.'
     }
     Assert-AdoNoReparsePoint -Path $resolvedAgentRoot -AllowMissingLeaf
-    Assert-AdoNoReparsePoint -Path $resolvedEscrow
+    Assert-AdoNoReparsePoint -Path $resolvedEscrow -AllowMissingLeaf
     Assert-AdoNoReparsePoint -Path $resolvedToolkit
     Test-AdoReleasePackage -PackagePath $resolvedToolkit | Out-Null
     try { $protectorValidation = Get-AdoProtectorGroupValidation -Identity $ProtectorGroup }
@@ -891,7 +1009,7 @@ function Initialize-AdoAgentCluster {
             throw "ProvisioningCredential is required for DPAPI-NG sealing on remote nodes: $($remoteNodesNeedingSeal -join ', '). Acquire it with Get-Credential; it is used in memory and is not stored."
         }
     }
-    $identityChecks = @(Get-AdoServiceIdentityChecks -ServiceIdentity $ServiceAccount -Node $Node -AgentRoot $resolvedAgentRoot)
+    $identityChecks = @(Get-AdoServiceIdentityChecks -ServiceIdentity $ServiceAccount -Node $Node -AgentRoot $resolvedAgentRoot -SkipAgentRootAccess)
     $failedIdentityChecks = @($identityChecks | Where-Object { -not $_.Passed })
     if ($failedIdentityChecks.Count -gt 0) {
         $failedNames = @($failedIdentityChecks | ForEach-Object { $_.Name }) -join ', '
@@ -958,8 +1076,20 @@ function Initialize-AdoAgentCluster {
             }
         }
         if (-not $PSCmdlet.ShouldProcess($ClusterRoleName, "download, register, and cluster Azure DevOps agent '$AgentName' as ConfigId $ConfigId")) {
-            return [pscustomobject]@{ ConfigId = $ConfigId; Planned = $true; StatePath = $statePath; Nodes = $Node; AgentRoot = $resolvedAgentRoot }
+            return [pscustomobject]@{
+                ConfigId = $ConfigId
+                Planned = $true
+                StatePath = $statePath
+                Nodes = $Node
+                AgentRoot = $resolvedAgentRoot
+                DirectoryPreparation = @(
+                    [pscustomobject]@{ Path = $resolvedAgentRoot; CreateIfMissing = $true; Acl = "Inheritable Modify for $ServiceAccount" }
+                    [pscustomobject]@{ Path = $resolvedEscrow; CreateIfMissing = $true; Acl = 'Protected Full Control for current operator and DPAPI-NG protector group' }
+                )
+            }
         }
+        $currentOperation = 'PrepareDirectories'
+        Initialize-AdoSetupDirectories -AgentRoot $resolvedAgentRoot -EscrowPath $resolvedEscrow -ServiceIdentity $ServiceAccount -ProtectorSid ([string]$protectorValidation.Sid) | Out-Null
         if ($rebindToolkitPackage -or $rebindProtectorGroup) {
             $currentOperation = if ($rebindProtectorGroup) { 'RebindProtectorGroup' } else { 'RebindToolkitPackage' }
             $state.immutable = $immutable

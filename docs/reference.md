@@ -27,13 +27,13 @@ Run this script on the current role/shared-disk owner for an already registered 
 
 ```text
 Initialize-AdoAgentCluster.ps1
-  -ServerType Services|Server
   -AzureDevOpsUrl <url>
-  -RegistrationAuth OAuthToken|PersonalAccessToken|Integrated|Negotiate
   -PoolName <pool> -AgentName <name> -AgentRoot <shared-path>
   -ClusterRoleName <role> -SharedDiskResourceName <disk-resource>
-  -ProtectorGroup <domain-group> -EscrowPath <path>
-  -ServiceAccount <identity> -ConfirmAgentIdle
+  -ProtectorGroup <domain-group> -ConfirmAgentIdle
+  [-ServerType Services|Server]
+  [-RegistrationAuth OAuthToken|PersonalAccessToken|Integrated|Negotiate]
+  [-EscrowPath <path>] [-ServiceAccount <identity>]
   [-RegistrationToken <SecureString>]
   [-RegistrationTokenEnvironmentVariableName <name>]
   [-RegistrationCredential <PSCredential>]
@@ -49,6 +49,8 @@ Initialize-AdoAgentCluster.ps1
 
 Authentication rules:
 
+- defaults: `Services`, `PersonalAccessToken`, `NT AUTHORITY\NETWORK SERVICE`, `_work`, and `C:\AdoAgentClusterKeyEscrow\<ConfigId>`;
+- attended fresh setup prompts securely for a missing PAT/OAuth token and `ProvisioningCredential`; resume never introduces an automatic credential prompt;
 - `OAuthToken`: Services only; exactly one secure token source unless resuming after the Offline registration check.
 - `PersonalAccessToken`: Services/Server; same secure-source rule.
 - `Integrated`: Server only; no token or credential parameter.
@@ -58,6 +60,8 @@ Authentication rules:
 - `ProvisioningCredential`: required when an unsealed passive node needs DPAPI-NG unwrap. It must use `DOMAIN\user` or `user@domain` format, identify a protector-group operator allowed to log on locally to each node, and is passed through encrypted PowerShell remoting. The password crosses only an anonymous stdin pipe to the fixed helper, is used for `LogonUser`, and is not persisted.
 
 The script consumes an environment variable by name, not by value. `-WhatIf` retains the source variable because it creates no child process. OAuth/PAT and passwords are placed only in the `config.cmd` child environment. The process arguments contain only nonsecret switches, including `--preventServiceStart` and optional explicit `--replace`.
+
+After the single setup confirmation, the script creates missing `AgentRoot` and `EscrowPath` directories. It uses SID-based `icacls` rules to grant the service identity inheritable Modify access, protects escrow inheritance, grants the current operator and DPAPI-NG protector group Full Control, and verifies the resulting ACLs. The service identity and Cluster runtime receive no escrow ACL. `-WhatIf` returns these intended directory and ACL actions in `DirectoryPreparation` without changing the filesystem.
 
 ### Setup-state schema
 

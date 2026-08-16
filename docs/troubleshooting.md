@@ -14,7 +14,8 @@ For new-agent bootstrap failures, also record the nonsecret `phase`, `lastFailur
 | unsafe/malformed ZIP | absolute, traversal, ADS, symlink, duplicate, reparse, or required-file check failed; quarantine the package |
 | existing agent name | confirm the old registration is stopped; use `-ReplaceExistingAgent` only under explicit change control |
 | partial registration | preserve dot-files and `_diag`; reconcile the local/server registration manually before a new ConfigId |
-| service identity prerequisite | ensure SID resolves on every node, `SeServiceLogonRight` exists, and AgentRoot has an explicit inheritable Modify ACE |
+| service identity prerequisite | ensure the SID resolves on every node and `SeServiceLogonRight` exists; setup now creates AgentRoot and applies the required inheritable Modify ACE |
+| `PrepareDirectories` or `icacls` failure | verify the shared disk is Online on the current node, both selected paths have non-reparse ancestry, the operator can create/secure them, and Group Policy or endpoint protection is not blocking ACL changes |
 | `ProtectorSid` | use a domain-qualified Active Directory group such as `CONTOSO\AdoAgentKeyRecoveryOperators`; local groups are not valid DPAPI-NG recovery principals |
 | `ProtectorSecurityGroup` | the resolved AD object is not a security-enabled group; use a security group rather than a distribution group |
 | `ProvisioningIdentity` | add the setup administrator to the protector group, then sign out and sign back in so the new SID is present in the logon token |

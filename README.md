@@ -55,31 +55,21 @@ Unsupported and fail-closed in v1:
 
 ## Five-minute quick start
 
-For a new registration, use the deployment-authenticated setup entry point. The deployment system supplies an already authorized short-lived token by variable name; the script downloads a matching Microsoft agent, registers it stopped, and invokes the cluster installer:
+For a new Azure DevOps Services registration, run one command from an elevated Windows PowerShell 5.1 session on the shared-disk owner. The entry point securely prompts for the PAT and the current protector-group operator's password, creates the missing agent and escrow directories, applies and verifies their ACLs, discovers all disk owners, generates the ConfigId and resource names, registers the agent stopped, and invokes the cluster installer:
 
 ```powershell
-$provisioningCredential = Get-Credential -UserName '<domain>\<protector-group-operator>'
-
 & '<release-folder>\Initialize-AdoAgentCluster.ps1' `
-  -ServerType Services `
   -AzureDevOpsUrl 'https://dev.azure.com/<organization>' `
-  -RegistrationAuth OAuthToken `
-  -RegistrationTokenEnvironmentVariableName 'SYSTEM_ACCESSTOKEN' `
   -PoolName '<pool>' `
   -AgentName '<logical-agent-name>' `
   -AgentRoot '<shared-disk>:\AdoAgent' `
   -ClusterRoleName '<existing-role>' `
   -SharedDiskResourceName '<existing-disk-resource>' `
-  -Node '<node-a>','<node-b>' `
   -ProtectorGroup '<domain>\<recovery-group>' `
-  -EscrowPath '<secure-admin-escrow-folder>' `
-  -ServiceAccount '<domain>\<gmsa>$' `
-  -ProvisioningCredential $provisioningCredential `
-  -ConfigId ([Guid]::NewGuid()) `
   -ConfirmAgentIdle
 ```
 
-The role remains Offline after setup. Read the complete [new-agent setup guide](docs/agent-setup.md) before use.
+The minimal path defaults to Azure DevOps Services, PAT authentication, `NT AUTHORITY\NETWORK SERVICE`, `_work`, and protected local escrow at `C:\AdoAgentClusterKeyEscrow\<ConfigId>`. Escrow access is limited to the current operator and DPAPI-NG protector group; the agent and Cluster runtime receive no ACL. Supply the existing optional parameters to use an OAuth token variable, gMSA, regular domain service identity, alternate escrow, offline agent package, or Azure DevOps Server. The role remains Offline after setup. Read the complete [new-agent setup guide](docs/agent-setup.md) before use.
 
 The following is the short path for an already registered, idle nonproduction agent. Run the packaged installer once on the current shared-disk owner; it discovers and deploys to every possible owner. Read [full cluster installation](docs/cluster-install.md), [prerequisites](docs/prerequisites.md), and [migration](docs/migration-and-setup.md) before production.
 

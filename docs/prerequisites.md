@@ -44,7 +44,7 @@ The existing deployment service must supply authorization; the toolkit does not 
 - Managed identity, device code, Alternate/Basic, and local service-principal secret acquisition are unsupported.
 - Pass tokens as `SecureString` or by the name of a secret process environment variable. Never put a value in command history.
 
-The shared AgentRoot must be absent or empty, have no reparse points in its ancestry, and inherit an explicit Modify ACE for the selected Windows service identity. The setup script requires a matching existing role and disk and registers with `--preventServiceStart`.
+The shared AgentRoot must be absent or empty and have no reparse points in its existing ancestry. The setup script creates missing directories, grants the selected Windows service identity an explicit inheritable Modify ACE, requires a matching existing role and disk, and registers with `--preventServiceStart`.
 
 ### Existing-agent files
 
@@ -96,7 +96,7 @@ The internal manifest detects changed package contents but does not authenticate
 
 ## Escrow
 
-Choose a secure administrator-controlled path that is:
+Choose a secure administrator-controlled path, or accept the attended setup default `C:\AdoAgentClusterKeyEscrow\<ConfigId>`. Setup creates a missing path and replaces its DACL with the protected recovery ACL. The location must be:
 
 - outside shared cluster storage and the agent-accessible filesystem;
 - backed up and recoverable independently of the cluster;

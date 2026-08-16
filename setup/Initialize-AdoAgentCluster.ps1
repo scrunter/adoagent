@@ -1,8 +1,8 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'High')]
 param(
-    [Parameter(Mandatory = $true)][ValidateSet('Services', 'Server')][string]$ServerType,
+    [ValidateSet('Services', 'Server')][string]$ServerType = 'Services',
     [Parameter(Mandatory = $true)][string]$AzureDevOpsUrl,
-    [Parameter(Mandatory = $true)][ValidateSet('OAuthToken', 'PersonalAccessToken', 'Integrated', 'Negotiate')][string]$RegistrationAuth,
+    [ValidateSet('OAuthToken', 'PersonalAccessToken', 'Integrated', 'Negotiate')][string]$RegistrationAuth = 'PersonalAccessToken',
     [Security.SecureString]$RegistrationToken,
     [string]$RegistrationTokenEnvironmentVariableName,
     [System.Management.Automation.PSCredential]$RegistrationCredential,
@@ -13,7 +13,7 @@ param(
     [Parameter(Mandatory = $true)][string]$ClusterRoleName,
     [Parameter(Mandatory = $true)][string]$SharedDiskResourceName,
     [Parameter(Mandatory = $true)][string]$ProtectorGroup,
-    [Parameter(Mandatory = $true)][string]$EscrowPath,
+    [string]$EscrowPath,
     [string]$ToolkitPackagePath = $PSScriptRoot,
     [string]$AgentPackagePath,
     [string]$AgentPackageSha256,
@@ -21,7 +21,7 @@ param(
     [Guid]$ConfigId = [Guid]::Empty,
     [string]$KeyResourceName,
     [string]$ServiceResourceName,
-    [Parameter(Mandatory = $true)][string]$ServiceAccount,
+    [string]$ServiceAccount = 'NT AUTHORITY\NETWORK SERVICE',
     [System.Management.Automation.PSCredential]$ServiceCredential,
     [System.Management.Automation.PSCredential]$ProvisioningCredential,
     [Parameter(Mandatory = $true)][switch]$ConfirmAgentIdle,
@@ -42,4 +42,16 @@ Import-Module $modulePath -Force
 $invoke = @{}
 foreach ($entry in $PSBoundParameters.GetEnumerator()) { $invoke[$entry.Key] = $entry.Value }
 if (-not $invoke.ContainsKey('ToolkitPackagePath')) { $invoke.ToolkitPackagePath = $ToolkitPackagePath }
+if (-not $Resume -and
+    $RegistrationAuth -in @('OAuthToken', 'PersonalAccessToken') -and
+    -not $invoke.ContainsKey('RegistrationToken') -and
+    -not $invoke.ContainsKey('RegistrationTokenEnvironmentVariableName')) {
+    $invoke.RegistrationToken = Read-Host -Prompt 'Azure DevOps registration token' -AsSecureString
+}
+if (-not $Resume -and -not $invoke.ContainsKey('ProvisioningCredential')) {
+    $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    $invoke.ProvisioningCredential = Get-Credential `
+        -UserName $currentIdentity `
+        -Message 'DPAPI-NG protector-group operator used for passive-node sealing'
+}
 Initialize-AdoAgentCluster @invoke

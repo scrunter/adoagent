@@ -8,11 +8,13 @@
 | `C:\ProgramData\AdoAgentClusterKey\<ConfigId>` | SYSTEM and built-in Administrators: Full Control; protected inheritance |
 | node sealed file | same as ConfigId directory; Hidden; never readable by the ADO service |
 | shared `.credentials_rsaparams` | exact owner/group/DACL captured from source plus Hidden; accessible only as required by the ADO service and administrators |
-| shared agent root | pipeline identity cannot create reparse points, rename root metadata, or replace `.agent`/key files outside the controlled service model |
-| escrow | recovery custodians only; explicitly deny/exclude ADO service, Cluster runtime, pipeline identities, and general shares |
+| shared agent root | setup grants the selected service SID inheritable Modify with `icacls`; no unrelated ACL is removed |
+| escrow | setup replaces the DACL with protected Full Control entries for the current operator and DPAPI-NG protector group; the service and Cluster runtime receive no ACL |
 | evaluation output | administrators/readers; it contains metadata only, but may expose topology and agent names |
 
 The helper captures and reapplies owner, group, and DACL SDDL. SACL collection is omitted because reading it requires `SeSecurityPrivilege` and audit policy is managed independently. Apply required SACLs at the parent by policy and verify them separately.
+
+For new-agent setup, missing agent and escrow directories are created only after `ShouldProcess` approval. Existing ancestry and the resulting directories are rejected if they contain reparse points. ACL subjects are passed to `icacls` as resolved SIDs, avoiding localized account-name and quoting ambiguity. Escrow uses a replacement DACL so inherited or pre-existing broad access cannot survive. The default local escrow path is `C:\AdoAgentClusterKeyEscrow\<ConfigId>`; copy its protected artifacts to the approved backed-up recovery store.
 
 ## Artifact integrity policy
 

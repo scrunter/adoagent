@@ -28,6 +28,94 @@ Describe 'Deployment-authenticated agent setup contract' {
         ($command.Parameters.Keys -contains 'LabAllowUnsigned') | Should -Be $false
     }
 
+    It 'defaults the common Services PAT and Network Service setup choices' {
+        $command = Get-Command $setupScriptPath
+        foreach ($name in @('ServerType', 'RegistrationAuth', 'EscrowPath', 'ServiceAccount')) {
+            @($command.Parameters[$name].Attributes | Where-Object { $_ -is [Management.Automation.ParameterAttribute] -and $_.Mandatory }).Count | Should -Be 0
+        }
+        $source = Get-Content -LiteralPath $setupScriptPath -Raw
+        $source | Should -Match "\`$ServerType\s*=\s*'Services'"
+        $source | Should -Match "\`$RegistrationAuth\s*=\s*'PersonalAccessToken'"
+        $source | Should -Match "\`$ServiceAccount\s*=\s*'NT AUTHORITY\\NETWORK SERVICE'"
+        $source | Should -Match "Read-Host -Prompt 'Azure DevOps registration token' -AsSecureString"
+        $source | Should -Match 'Get-Credential'
+        $source | Should -Match '\[Security\.Principal\.WindowsIdentity\]::GetCurrent\(\)\.Name'
+        (Get-Content -LiteralPath $setupModulePath -Raw) | Should -Match 'AdoAgentClusterKeyEscrow'
+    }
+
+    It 'creates and secures missing setup directories idempotently' {
+        $global:AdoSetupCreatedAgentRoot = Join-Path $TestDrive 'new\shared\agent'
+        $global:AdoSetupCreatedEscrow = Join-Path $TestDrive 'new\escrow'
+        try {
+            InModuleScope AdoAgentClusterKey {
+                Mock Invoke-AdoIcacls {}
+                Mock Test-AdoPathAclForIdentity { $true }
+                Mock Test-AdoEscrowAcl { $true }
+
+                $first = Initialize-AdoSetupDirectories `
+                    -AgentRoot $global:AdoSetupCreatedAgentRoot `
+                    -EscrowPath $global:AdoSetupCreatedEscrow `
+                    -ServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' `
+                    -ProtectorSid 'S-1-5-32-544'
+                $second = Initialize-AdoSetupDirectories `
+                    -AgentRoot $global:AdoSetupCreatedAgentRoot `
+                    -EscrowPath $global:AdoSetupCreatedEscrow `
+                    -ServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' `
+                    -ProtectorSid 'S-1-5-32-544'
+
+                $first.AgentRootCreated | Should -Be $true
+                $first.EscrowCreated | Should -Be $true
+                $second.AgentRootCreated | Should -Be $false
+                $second.EscrowCreated | Should -Be $false
+                Test-Path -LiteralPath $global:AdoSetupCreatedAgentRoot -PathType Container | Should -Be $true
+                Test-Path -LiteralPath $global:AdoSetupCreatedEscrow -PathType Container | Should -Be $true
+                Assert-MockCalled Invoke-AdoIcacls -Times 2 -ParameterFilter {
+                    $Path -eq $global:AdoSetupCreatedAgentRoot -and $Arguments -contains '*S-1-5-20:(OI)(CI)M'
+                }
+                Assert-MockCalled Invoke-AdoIcacls -Times 2 -ParameterFilter {
+                    $Path -eq $global:AdoSetupCreatedEscrow -and $Arguments -contains '/inheritance:r'
+                }
+                Assert-MockCalled Invoke-AdoIcacls -Times 2 -ParameterFilter {
+                    $Path -eq $global:AdoSetupCreatedEscrow -and $Arguments -contains '/reset'
+                }
+            }
+        }
+        finally {
+            Remove-Variable AdoSetupCreatedAgentRoot,AdoSetupCreatedEscrow -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'applies and verifies the real SID-based directory ACLs on Windows' {
+        $global:AdoSetupAclAgentRoot = Join-Path $TestDrive 'acl\shared\agent'
+        $global:AdoSetupAclEscrow = Join-Path $TestDrive 'acl\escrow'
+        try {
+            InModuleScope AdoAgentClusterKey {
+                $result = Initialize-AdoSetupDirectories `
+                    -AgentRoot $global:AdoSetupAclAgentRoot `
+                    -EscrowPath $global:AdoSetupAclEscrow `
+                    -ServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' `
+                    -ProtectorSid 'S-1-5-32-544'
+
+                Test-AdoPathAclForIdentity -Path $result.AgentRoot -Identity 'NT AUTHORITY\NETWORK SERVICE' -RequireInheritance | Should -Be $true
+                Test-AdoEscrowAcl -Path $result.EscrowPath -RequiredSid $result.EscrowTrusteeSids | Should -Be $true
+            }
+        }
+        finally {
+            Remove-Variable AdoSetupAclAgentRoot,AdoSetupAclEscrow -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'prepares directories only after approval and reports the WhatIf ACL plan' {
+        $source = Get-Content -LiteralPath $setupModulePath -Raw
+        $start = $source.IndexOf('function Initialize-AdoAgentCluster')
+        $initializeSource = $source.Substring($start)
+
+        $initializeSource.IndexOf('$currentOperation = ''PrepareDirectories''') | Should -BeGreaterThan $initializeSource.IndexOf('$PSCmdlet.ShouldProcess')
+        $initializeSource | Should -Match 'Initialize-AdoSetupDirectories'
+        $initializeSource | Should -Match 'DirectoryPreparation'
+        $initializeSource | Should -Match 'CreateIfMissing'
+    }
+
     It 'uses a nonsecret six-phase resume state machine' {
         $source = Get-Content -LiteralPath $setupModulePath -Raw
         foreach ($phase in @('Preflight', 'PackageStaged', 'RegisteredStopped', 'KeyValidated', 'ClusterInstalled', 'Complete')) { $source | Should -Match ("'" + $phase + "'") }

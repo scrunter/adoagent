@@ -26,8 +26,8 @@ Before continuing, confirm that:
 - both target nodes are possible owners of the disk;
 - no pipeline job is running and any existing agent/key-selector resources are Offline;
 - PowerShell remoting works from the current owner to every possible owner;
-- the shared agent root is absent or empty and has no reparse points;
-- an administrator-only escrow directory exists outside shared cluster storage and the agent-accessible filesystem; and
+- the shared agent root is absent or empty and its existing path ancestry has no reparse points;
+- the selected escrow location is outside shared cluster storage and the agent-accessible filesystem; and
 - the toolkit release ZIP and its approved SHA-256 are available through controlled distribution.
 
 List the current cluster objects:
@@ -56,10 +56,11 @@ For Azure DevOps Services, use a short-lived OAuth token supplied by the deploym
 
 Managed identity is not a direct registration mode. A deployment system running under managed identity must obtain an acceptable Azure DevOps OAuth token before calling the setup script.
 
-A gMSA is the preferred Windows service identity. It must already be installed on every possible owner and have:
+A gMSA is the preferred production Windows service identity. The minimal attended command defaults to `NT AUTHORITY\NETWORK SERVICE`. A selected gMSA must already be installed on every possible owner and have:
 
-- `Log on as a service`; and
-- an explicit inheritable Modify ACE on the shared agent root, or its existing parent when the root does not yet exist.
+- `Log on as a service`.
+
+The setup script creates the shared root when needed and grants the selected service identity an inheritable Modify ACE.
 
 Create a dedicated domain security group for DPAPI-NG recovery operators, for example `CONTOSO\AdoAgentKeyRecoveryOperators`. The administrator running setup must have this group in their current logon token:
 
@@ -69,39 +70,30 @@ whoami /groups
 
 Do not add the agent service identity, pipeline identities, or cluster computer accounts to the recovery group.
 
-## 3. Prepare the shared root and escrow
+## 3. Directory and ACL preparation
 
-Example shared root and service-account ACL:
+Do not create the agent or escrow directories manually. After confirmation, setup:
 
-```powershell
-$agentRoot = 'S:\AdoAgent'
+- creates `AgentRoot` and missing parent directories;
+- grants the selected service identity inheritable Modify access using its resolved SID and `icacls`;
+- creates `EscrowPath` and missing parent directories;
+- disables inherited escrow permissions and grants Full Control to the current operator and DPAPI-NG protector group; and
+- verifies both ACLs before downloading or registering the agent.
 
-New-Item -Path $agentRoot -ItemType Directory
-icacls $agentRoot /grant 'CONTOSO\svc-adoagent$:(OI)(CI)M'
-```
-
-Keep this directory empty. The `_work` directory will inherit the access rule when the Microsoft agent creates it.
-
-Pre-create a protected escrow directory, for example:
-
-```powershell
-$escrowPath = '\\secure-files\ado-escrow\cluster-agent-01'
-```
-
-Only recovery administrators should be able to access escrow. The agent service identity and pipeline jobs must not be able to read it.
+The escrow DACL is replaced rather than merged so inherited or pre-existing broad access cannot survive. The default unique escrow path is `C:\AdoAgentClusterKeyEscrow\<ConfigId>`; copy its protected artifacts into the approved backed-up recovery store after installation. Use `-EscrowPath` when policy requires a different administrator-controlled location.
 
 ## 4. Build and verify a release
 
 In the controlled build environment:
 
 ```powershell
-.\build\Build.ps1 -Version '0.3.0'
+.\build\Build.ps1 -Version '<version>'
 ```
 
 Record the reported ZIP SHA-256 in the approved deployment/change record. On the current cluster owner, compare the copied ZIP with that independently obtained value before extraction:
 
 ```powershell
-$zip = 'C:\Deployment\AdoAgentClusterKey-0.3.0-win-x64.zip'
+$zip = 'C:\Deployment\AdoAgentClusterKey-<version>-win-x64.zip'
 $expectedZipSha256 = '<sha256-from-approved-record>'
 
 if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $expectedZipSha256) {
@@ -112,7 +104,7 @@ if ((Get-FileHash -LiteralPath $zip -Algorithm SHA256).Hash -ne $expectedZipSha2
 Extract it, then validate the internal manifest:
 
 ```powershell
-$release = 'C:\Deployment\AdoAgentClusterKey-0.3.0-win-x64'
+$release = 'C:\Deployment\AdoAgentClusterKey-<version>-win-x64'
 
 & "$release\Test-Release.ps1" `
     -PackagePath $release
@@ -130,13 +122,31 @@ ADO_AGENT_REGISTRATION_TOKEN
 
 The variable must exist in the PowerShell process running on the current cluster owner. Do not put the token value in a script, command argument, transcript, or parameter file.
 
-For an attended setup, use a `SecureString` instead:
+For an attended fresh setup, omit both token parameters and the script securely prompts for the token. You can still acquire a `SecureString` explicitly:
 
 ```powershell
 $registrationToken = Read-Host 'Azure DevOps registration token' -AsSecureString
 ```
 
-## 6. Define the installation
+## 6. Run the minimal attended installation
+
+The common Azure DevOps Services path needs only the values that cannot be safely discovered. It defaults to PAT authentication, `NT AUTHORITY\NETWORK SERVICE`, `_work`, unique local protected escrow under `C:\AdoAgentClusterKeyEscrow`, an automatically generated ConfigId, discovered disk owners, and role-derived resource names:
+
+```powershell
+& '<release-folder>\Initialize-AdoAgentCluster.ps1' `
+    -AzureDevOpsUrl 'https://dev.azure.com/<organization>' `
+    -PoolName '<agent-pool>' `
+    -AgentName '<logical-agent-name>' `
+    -AgentRoot '<shared-disk>:\AdoAgent' `
+    -ClusterRoleName '<existing-role>' `
+    -SharedDiskResourceName '<existing-disk-resource>' `
+    -ProtectorGroup '<domain>\<dpapi-ng-security-group>' `
+    -ConfirmAgentIdle
+```
+
+The script prompts first for the PAT and then for the current Windows identity's provisioning password. Pass `-RegistrationToken`, `-RegistrationTokenEnvironmentVariableName`, or `-ProvisioningCredential` explicitly to suppress the corresponding prompt. Always run the same command with `-WhatIf` first in production.
+
+## 7. Define an advanced or automated installation
 
 Generate and retain one ConfigId:
 
@@ -185,7 +195,7 @@ $setupParameters.ServiceCredential =
 
 Azure DevOps Server can instead use `Integrated`, `Negotiate`, or `PersonalAccessToken` registration. See [New agent setup](agent-setup.md#azure-devops-server-examples).
 
-## 7. Run the read-only preflight
+## 8. Run the read-only preflight
 
 Always run `-WhatIf` first:
 
@@ -199,7 +209,7 @@ This validates the cluster, service identity, access rights, remoting, required 
 
 Resolve every reported failure before continuing.
 
-## 8. Run setup
+## 9. Run setup
 
 Run the same command without `-WhatIf`:
 
@@ -234,7 +244,7 @@ The setup script:
 
 The real run reads the named token once and removes it from the setup process environment.
 
-## 9. Review the offline installation
+## 10. Review the offline installation
 
 Confirm setup reached `Complete`:
 
@@ -284,7 +294,7 @@ Invoke-Command `
     }
 ```
 
-## 10. Perform the first clustered start
+## 11. Perform the first clustered start
 
 Bring the role Online explicitly:
 
@@ -308,7 +318,7 @@ Run a full key probe on the owner:
 
 In Azure DevOps, confirm that exactly one logical agent is Online and run a harmless canary job.
 
-## 11. Test both possible owners
+## 12. Test both possible owners
 
 Move the role to the second node:
 
