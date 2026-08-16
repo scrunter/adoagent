@@ -166,6 +166,20 @@ Describe 'AdoAgentClusterKey module contract' {
         $source | Should -Match 'ErrorControl\s*=\s*\[byte\]1'
     }
 
+    It 'registers and verifies the Microsoft service event source on every node' {
+        $source = Get-Content -LiteralPath $modulePath -Raw
+        $start = $source.IndexOf('function Set-AdoNodeService')
+        $end = $source.IndexOf('function Test-AdoNodeIsLocal')
+        $nodeServiceSource = $source.Substring($start, $end - $start)
+
+        $nodeServiceSource | Should -Match "eventSource\s*=\s*'VstsAgentService'"
+        $nodeServiceSource | Should -Match '\[Diagnostics\.EventLog\]::SourceExists'
+        $nodeServiceSource | Should -Match '\[Diagnostics\.EventLog\]::CreateEventSource'
+        $nodeServiceSource | Should -Match '\[Diagnostics\.EventLog\]::LogNameFromSourceName'
+        $nodeServiceSource | Should -Match '\[Diagnostics\.EventLog\]::WriteEntry'
+        $nodeServiceSource.IndexOf('CreateEventSource') | Should -BeLessThan $nodeServiceSource.IndexOf('Get-CimInstance Win32_Service')
+    }
+
     It 'makes reseal and purge explicit and restores rollback state' {
         $source = Get-Content -LiteralPath $modulePath -Raw
         $source | Should -Match 'if \(\$Reseal\)'

@@ -6,6 +6,8 @@ For new-agent bootstrap failures, also record the nonsecret `phase`, `lastFailur
 
 If version `0.4.19` fails at `ValidateClusterPrerequisites` with only `ServiceAgentRootAccess`, upgrade to `0.4.20` or later and resume with the same `ConfigId` and immutable inputs. Version `0.4.19` could lose the prepared service-account ACL when its safely extracted staging directory was promoted into `AgentRoot`. The corrected setup reapplies and verifies that ACL after package promotion and before cluster installation. Do not re-register the agent or create a new `ConfigId` for this failure.
 
+If `AgentService.exe` remains Running on a passive node but there is no `Agent.Listener.exe`, no new agent diagnostic log, no `VstsAgentService` Application event, and Azure DevOps reports Offline, upgrade to `0.4.21` or later and run `Repair-AdoAgentCluster` while the role is offline. Releases through `0.4.20` cloned the Windows service but omitted the machine-local event-source initialization normally performed by Microsoft during `config.cmd`. Under a non-administrative service identity, the wrapper's first event write could fail before it spawned the listener while SCM continued to report the wrapper as Running. Repair now creates and verifies the `VstsAgentService` Application-log source on every possible owner before configuring its service. No ADO re-registration or key reseal is required.
+
 ## Setup failures
 
 | Failure | Meaning and action |

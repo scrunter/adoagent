@@ -331,6 +331,27 @@ function Set-AdoNodeService {
     )
     Invoke-Command -ComputerName $Node -ScriptBlock {
         param($definition, $credential)
+        # The Microsoft agent installer runs `AgentService.exe init` before it
+        # creates the service. That command registers this classic Application
+        # event source. Passive nodes cannot run the shared-drive executable
+        # while another node owns the disk, so establish the same machine-local
+        # prerequisite directly before cloning or repairing the service.
+        $eventSource = 'VstsAgentService'
+        if (-not [Diagnostics.EventLog]::Exists('Application')) {
+            throw 'The Application event log is unavailable.'
+        }
+        if (-not [Diagnostics.EventLog]::SourceExists($eventSource)) {
+            [Diagnostics.EventLog]::CreateEventSource($eventSource, 'Application')
+        }
+        if ([Diagnostics.EventLog]::LogNameFromSourceName($eventSource, '.') -ne 'Application') {
+            throw "The '$eventSource' event source is not registered to the Application log on $env:COMPUTERNAME."
+        }
+        [Diagnostics.EventLog]::WriteEntry(
+            $eventSource,
+            'AdoAgentClusterKey verified the Azure Pipelines agent service event source.',
+            [Diagnostics.EventLogEntryType]::Information,
+            100)
+
         $escaped = $definition.Name.Replace("'", "''")
         $service = Get-CimInstance Win32_Service -Filter "Name='$escaped'"
         $account = [string]$definition.StartName
