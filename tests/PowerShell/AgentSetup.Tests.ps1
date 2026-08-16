@@ -105,6 +105,40 @@ Describe 'Deployment-authenticated agent setup contract' {
         }
     }
 
+    It 'propagates the reapplied service ACL to an already promoted package tree' {
+        $global:AdoSetupPromotedRoot = Join-Path $TestDrive 'promoted\agent'
+        New-Item -ItemType Directory -Path (Join-Path $global:AdoSetupPromotedRoot 'bin') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $global:AdoSetupPromotedRoot 'bin\Agent.Listener.exe') -Value 'test'
+        try {
+            InModuleScope AdoAgentClusterKey {
+                Set-AdoAgentRootAcl `
+                    -AgentRoot $global:AdoSetupPromotedRoot `
+                    -ServiceIdentity 'NT AUTHORITY\NETWORK SERVICE' | Out-Null
+
+                Test-AdoPathAclForIdentity -Path $global:AdoSetupPromotedRoot -Identity 'NT AUTHORITY\NETWORK SERVICE' -RequireInheritance | Should -Be $true
+                Test-AdoPathAclForIdentity -Path (Join-Path $global:AdoSetupPromotedRoot 'bin\Agent.Listener.exe') -Identity 'NT AUTHORITY\NETWORK SERVICE' | Should -Be $true
+            }
+        }
+        finally {
+            Remove-Variable AdoSetupPromotedRoot -Scope Global -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'reapplies the service ACL after atomic package promotion and before cluster validation' {
+        $source = Get-Content -LiteralPath $setupModulePath -Raw
+        $start = $source.IndexOf('function Initialize-AdoAgentCluster')
+        $initializeSource = $source.Substring($start)
+        $extractIndex = $initializeSource.IndexOf('Expand-AdoAgentArchive -ArchivePath')
+        $aclOperationIndex = $initializeSource.IndexOf("`$currentOperation = 'PreparePromotedAgentRootAcl'")
+        $aclCallIndex = $initializeSource.IndexOf('Set-AdoAgentRootAcl -AgentRoot $resolvedAgentRoot')
+        $prerequisiteIndex = $initializeSource.IndexOf('Test-AdoAgentClusterPrerequisite -AgentRoot')
+
+        $extractIndex | Should -BeGreaterThan -1
+        $aclOperationIndex | Should -BeGreaterThan $extractIndex
+        $aclCallIndex | Should -BeGreaterThan $aclOperationIndex
+        $prerequisiteIndex | Should -BeGreaterThan $aclCallIndex
+    }
+
     It 'prepares directories only after approval and reports the WhatIf ACL plan' {
         $source = Get-Content -LiteralPath $setupModulePath -Raw
         $start = $source.IndexOf('function Initialize-AdoAgentCluster')
