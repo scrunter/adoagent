@@ -78,7 +78,7 @@ Do not create the agent or escrow directories manually. After confirmation, setu
 - grants the selected service identity inheritable Modify access using its resolved SID and `icacls`;
 - creates `EscrowPath` and missing parent directories;
 - disables inherited escrow permissions and grants Full Control to the current operator and DPAPI-NG protector group; and
-- verifies both ACLs before downloading or registering the agent.
+- verifies both ACLs before downloading or registering the agent, then reapplies and verifies the agent-root ACL after atomic package promotion.
 
 The escrow DACL is replaced rather than merged so inherited or pre-existing broad access cannot survive. The default unique escrow path is `C:\AdoAgentClusterKeyEscrow\<ConfigId>`; copy its protected artifacts into the approved backed-up recovery store after installation. Use `-EscrowPath` when policy requires a different administrator-controlled location.
 

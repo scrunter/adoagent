@@ -4,6 +4,8 @@ All helper messages are sanitized. Capture `--json`, exit code, ConfigId, owner 
 
 For new-agent bootstrap failures, also record the nonsecret `phase`, `lastFailurePhase`, `lastFailureOperation`, package version/hash, registration mode, pool/agent names, and whether `registrationOfflineVerified` is true. The terminating error includes the same sanitized operation as `AdoAgentClusterSetup.<operation>`. Never capture the registration-token environment value or a process environment dump.
 
+If version `0.4.19` fails at `ValidateClusterPrerequisites` with only `ServiceAgentRootAccess`, upgrade to `0.4.20` or later and resume with the same `ConfigId` and immutable inputs. Version `0.4.19` could lose the prepared service-account ACL when its safely extracted staging directory was promoted into `AgentRoot`. The corrected setup reapplies and verifies that ACL after package promotion and before cluster installation. Do not re-register the agent or create a new `ConfigId` for this failure.
+
 ## Setup failures
 
 | Failure | Meaning and action |

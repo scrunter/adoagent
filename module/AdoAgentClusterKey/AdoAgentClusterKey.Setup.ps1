@@ -593,6 +593,25 @@ function Invoke-AdoIcacls {
     }
 }
 
+function Set-AdoAgentRootAcl {
+    param(
+        [Parameter(Mandatory = $true)][string]$AgentRoot,
+        [Parameter(Mandatory = $true)][string]$ServiceIdentity
+    )
+    if (-not (Test-Path -LiteralPath $AgentRoot -PathType Container)) {
+        throw "AgentRoot '$AgentRoot' does not exist or is not a directory."
+    }
+    Assert-AdoNoReparsePoint -Path $AgentRoot
+
+    $windowsIdentity = Get-AdoServiceIdentityForWindows -Identity $ServiceIdentity
+    $serviceSid = (New-Object Security.Principal.NTAccount($windowsIdentity)).Translate([Security.Principal.SecurityIdentifier]).Value
+    Invoke-AdoIcacls -Path $AgentRoot -Arguments @('/grant:r', ('*{0}:(OI)(CI)M' -f $serviceSid))
+    if (-not (Test-AdoPathAclForIdentity -Path $AgentRoot -Identity $ServiceIdentity -RequireInheritance)) {
+        throw "AgentRoot ACL preparation did not grant Modify access to '$ServiceIdentity'."
+    }
+    return $serviceSid
+}
+
 function Test-AdoEscrowAcl {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
@@ -647,12 +666,7 @@ function Initialize-AdoSetupDirectories {
     }
     Assert-AdoNoReparsePoint -Path $AgentRoot
 
-    $windowsIdentity = Get-AdoServiceIdentityForWindows -Identity $ServiceIdentity
-    $serviceSid = (New-Object Security.Principal.NTAccount($windowsIdentity)).Translate([Security.Principal.SecurityIdentifier]).Value
-    Invoke-AdoIcacls -Path $AgentRoot -Arguments @('/grant:r', ('*{0}:(OI)(CI)M' -f $serviceSid))
-    if (-not (Test-AdoPathAclForIdentity -Path $AgentRoot -Identity $ServiceIdentity -RequireInheritance)) {
-        throw "AgentRoot ACL preparation did not grant Modify access to '$ServiceIdentity'."
-    }
+    $serviceSid = Set-AdoAgentRootAcl -AgentRoot $AgentRoot -ServiceIdentity $ServiceIdentity
 
     $escrowCreated = $false
     if (Test-Path -LiteralPath $EscrowPath) {
@@ -1201,6 +1215,11 @@ function Initialize-AdoAgentCluster {
             $phaseIndex = Get-AdoSetupPhaseIndex -Phase 'KeyValidated'
         }
         if ($phaseIndex -lt (Get-AdoSetupPhaseIndex -Phase 'ClusterInstalled')) {
+            # Package staging promotes a sibling directory atomically. That replacement
+            # creates a new directory object, so reapply the service ACL after registration
+            # and on every resume before the authoritative prerequisite check.
+            $currentOperation = 'PreparePromotedAgentRootAcl'
+            Set-AdoAgentRootAcl -AgentRoot $resolvedAgentRoot -ServiceIdentity $ServiceAccount | Out-Null
             $currentOperation = 'ValidateClusterPrerequisites'
             Test-AdoAgentClusterPrerequisite -AgentRoot $resolvedAgentRoot -ClusterRoleName $ClusterRoleName -SharedDiskResourceName $SharedDiskResourceName -ProtectorGroup $ProtectorGroup -Node $Node -PackagePath $resolvedToolkit -ServiceIdentity $ServiceAccount -WorkDirectory $WorkDirectory -ThrowOnFailure | Out-Null
             $currentOperation = 'InstallClusterResources'
